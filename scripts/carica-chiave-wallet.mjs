@@ -51,14 +51,26 @@ const base64 = Buffer.from(JSON.stringify(json)).toString('base64');
 console.log(`\nAccount di servizio: ${json.client_email}`);
 console.log(`Lo carico su Cloudflare come segreto GOOGLE_WALLET_SA...\n`);
 
-const esito = spawnSync(
-  process.platform === 'win32' ? 'npx.cmd' : 'npx',
-  ['wrangler', 'secret', 'put', 'GOOGLE_WALLET_SA'],
-  { input: base64, stdio: ['pipe', 'inherit', 'inherit'] },
-);
+// shell: true serve su Windows, dove npx e' uno script e non un eseguibile:
+// senza, spawnSync fallisce con ENOENT e sembra un problema di credenziali.
+const esito = spawnSync('npx wrangler secret put GOOGLE_WALLET_SA', {
+  input: base64,
+  stdio: ['pipe', 'inherit', 'inherit'],
+  shell: true,
+});
 
+if (esito.error) {
+  console.error(`\nNon sono riuscito ad avviare wrangler: ${esito.error.message}\n`);
+  process.exit(1);
+}
 if (esito.status !== 0) {
-  console.error('\nCaricamento non riuscito. Sei collegato? Prova: npx wrangler login\n');
+  console.error(`
+Caricamento non riuscito (codice ${esito.status}).
+
+Sopra dovresti vedere il motivo riportato da wrangler. Le due cause piu'
+comuni sono: non essere collegati (npx wrangler login) o non aver ancora
+pubblicato il Worker (npx wrangler deploy).
+`);
   process.exit(esito.status ?? 1);
 }
 
