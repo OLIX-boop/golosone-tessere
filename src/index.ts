@@ -13,6 +13,7 @@ import {
 import { isValidCode, normalizeCode, parseInput } from './codes.ts';
 import { parsePoints, pointsLabel } from './points.ts';
 import { qrSvg } from './qr.ts';
+import { ensureClass, readConfig, readConfigDetailed, saveLink, upsertObject } from './google-wallet.ts';
 import {
   activateCard,
   cardStock,
@@ -172,6 +173,34 @@ app.post('/api/logout', async (c) => {
   return c.json({ ok: true });
 });
 
+// ----------------------------------------------------------- Google Wallet
+
+/**
+ * Riallinea il pass nel telefono del cliente dopo un movimento.
+ *
+ * Parte in sottofondo e ingoia ogni errore: se Google non risponde, la cassa
+ * non deve rallentare ne' fallire. Nel peggiore dei casi il pass resta
+ * indietro finche' il cliente non riapre la sua pagina.
+ */
+function aggiornaPassInSottofondo(c: any, card: Customer) {
+  if (!c.env.GOOGLE_WALLET_SA) return; // non configurato: nemmeno una query in piu'
+  c.executionCtx?.waitUntil(
+    (async () => {
+      try {
+        const cfg = readConfig(c.env, await getSettings(c.env.DB), new URL(c.req.url).origin);
+        if (!cfg) return;
+        await upsertObject(cfg, {
+          code: card.code,
+          firstName: card.first_name,
+          points: card.points_balance,
+        });
+      } catch (err) {
+        console.error('Aggiornamento Google Wallet fallito:', err);
+      }
+    })(),
+  );
+}
+
 // ==================================================================== cassa
 
 app.use('/api/cassa/*', requireSession);
@@ -243,6 +272,7 @@ app.post('/api/cassa/points', async (c) => {
       storeId: STORE_ID,
       points: parsed.points,
     });
+    aggiornaPassInSottofondo(c, result.customer);
     return c.json({ ok: true, ...result, pointsAdded: parsed.points });
   } catch (err) {
     return c.json(fail((err as Error).message), 400);
@@ -258,6 +288,7 @@ app.post('/api/cassa/redeem', async (c) => {
       storeId: STORE_ID,
       rewardId: body.rewardId,
     });
+    aggiornaPassInSottofondo(c, result.customer);
     return c.json({ ok: true, ...result });
   } catch (err) {
     return c.json(fail((err as Error).message), 400);
@@ -272,6 +303,7 @@ app.post('/api/cassa/void', async (c) => {
       transactionId,
       windowMinutes: await getSettingInt(c.env.DB, 'void_window_min', 30),
     });
+    aggiornaPassInSottofondo(c, customer);
     return c.json({ ok: true, customer });
   } catch (err) {
     return c.json(fail((err as Error).message), 400);
@@ -338,6 +370,9 @@ app.get('/api/titolare/stato', async (c) => {
     canSetup: await hasSession(c.env, getCookie(c, SESSION_COOKIE), 'cassa'),
     loggedIn: await hasSession(c.env, getCookie(c, ADMIN_COOKIE), 'titolare'),
     storeName: settings.store_name ?? 'Pasticceria',
+    // il segreto non si mostra mai: basta sapere se c'e' e se e' leggibile
+    walletSegreto: !!c.env.GOOGLE_WALLET_SA,
+    walletProblema: readConfigDetailed(c.env, settings, new URL(c.req.url).origin).problema,
   });
 });
 
@@ -495,6 +530,8 @@ const MODIFICABILI = new Set([
   'void_window_min',
   'show_rewards_to_customer',
   'timezone',
+  'wallet_issuer_id',
+  'wallet_class_suffix',
 ]);
 
 app.post('/api/titolare/impostazioni', async (c) => {
@@ -528,6 +565,37 @@ app.post('/api/titolare/pin-negozio', async (c) => {
   // cambiarlo non servirebbe a niente
   await c.env.DB.prepare("DELETE FROM sessions WHERE scope = 'cassa'").run();
   return c.json({ ok: true });
+});
+
+/**
+ * "Aggiungi a Google Wallet" per una tessera.
+ *
+ * Fa tutto lato server e poi rimanda a Google: il cliente tocca un pulsante e
+ * si ritrova la tessera nel telefono, senza passaggi intermedi da capire.
+ */
+app.get('/c/:code/wallet', async (c) => {
+  const code = normalizeCode(c.req.param('code'));
+  if (!isValidCode(code)) return c.text('Codice tessera non valido', 404);
+
+  const settings = await getSettings(c.env.DB);
+  const cfg = readConfig(c.env, settings, new URL(c.req.url).origin);
+  if (!cfg) return c.text('Google Wallet non e configurato per questo negozio', 503);
+
+  const card = await findByCode(c.env.DB, code);
+  if (!card || !card.activated_at) return c.text('Tessera non trovata', 404);
+
+  try {
+    await ensureClass(cfg);
+    await upsertObject(cfg, {
+      code: card.code,
+      firstName: card.first_name,
+      points: card.points_balance,
+    });
+    return c.redirect(await saveLink(cfg, card.code), 302);
+  } catch (err) {
+    console.error('Google Wallet:', err);
+    return c.text('Non riesco a creare la tessera adesso. Riprova piu tardi.', 502);
+  }
 });
 
 // ============================================================ stampa tessere
@@ -648,7 +716,10 @@ app.get('/c/:code', async (c) => {
     showRewards ? listRewards(c.env.DB) : Promise.resolve([]),
   ]);
 
-  return c.html(customerPage({ storeName, customer, history: history as HistoryRow[], rewards }));
+  const walletPronto = !!readConfig(c.env, settings, new URL(c.req.url).origin);
+  return c.html(
+    customerPage({ storeName, customer, history: history as HistoryRow[], rewards, walletPronto }),
+  );
 });
 
 type HistoryRow = {
@@ -665,6 +736,7 @@ function customerPage(data: {
   customer?: Customer;
   history?: HistoryRow[];
   rewards?: { id: number; name: string; points_cost: number }[];
+  walletPronto?: boolean;
   notFound?: boolean;
 }): string {
   const head = `<!doctype html><html lang="it"><head>
@@ -719,6 +791,23 @@ function customerPage(data: {
   <section class="card">
     <h2>Ultimi movimenti</h2>
     ${rows ? `<table>${rows}</table>` : '<p class="hint">Ancora nessun movimento.</p>'}
+  </section>
+
+  <section class="card telefono">
+    <h2>Porta la tessera nel telefono</h2>
+
+    ${data.walletPronto ? `<p class="hint" style="margin-top:0">Se hai un telefono Android:</p>
+    <p><a class="bottone" href="/c/${esc(cu.code)}/wallet">Aggiungi a Google Wallet</a></p>
+    <p class="hint">I punti si aggiornano da soli: non devi rifare niente.</p>` : ''}
+
+    <p class="hint"${data.walletPronto ? ' style="margin-top:18px"' : ' style="margin-top:0"'}>Se hai un iPhone (iOS 27 o successivo):</p>
+    <ol class="passi">
+      <li>Apri <b>Wallet</b></li>
+      <li>Tocca <b>+</b> in alto, poi <b>Crea un pass</b></li>
+      <li>Inquadra il <b>cartoncino della tessera</b>, non questo schermo</li>
+    </ol>
+    <p class="hint">La tessera nel Wallet di iPhone resta ferma al momento in cui la crei:
+       serve a farti trovare il codice, ma per il saldo aggiornato torna su questa pagina.</p>
   </section>
 
   <footer>

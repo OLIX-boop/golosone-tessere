@@ -1,6 +1,10 @@
 import { generateCode, normalizePhone } from './codes.ts';
 
-export type Env = { DB: D1Database };
+export type Env = {
+  DB: D1Database;
+  /** JSON del service account Google, come segreto del Worker (mai in database) */
+  GOOGLE_WALLET_SA?: string;
+};
 
 export type Customer = {
   id: number;

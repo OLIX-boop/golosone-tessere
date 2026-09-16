@@ -233,6 +233,18 @@
       </div>
 
       <div class="card">
+        <h2>Google Wallet</h2>
+        <p class="hint" id="walletStato"></p>
+        <div class="row" style="margin-top:12px">
+          <div class="grow">
+            <label class="hint" for="setIssuer">ID emittente (dalla console Google Pay &amp; Wallet)</label>
+            <input id="setIssuer" inputmode="numeric" placeholder="es. 3388000000012345678">
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px"><button class="primary" id="salvaWallet">Salva</button></div>
+      </div>
+
+      <div class="card">
         <h2>PIN di cassa</h2>
         <p class="hint">Cambiandolo, tutte le casse aperte vengono disconnesse e dovranno
            rientrare col nuovo PIN.</p>
@@ -274,6 +286,7 @@ async function api(path, opts = {}) {
 // ------------------------------------------------------------- avvio
 async function boot() {
   const s = await api('/api/titolare/stato');
+  stato.walletSegreto = s.walletSegreto;
   $('shopName').textContent = s.storeName;
   document.title = 'Titolare - ' + s.storeName;
 
@@ -558,7 +571,36 @@ async function caricaImpostazioni() {
   $('setMaxPoints').value = impostazioni.max_points_per_tx ?? '20';
   $('setVoid').value = impostazioni.void_window_min ?? '30';
   $('setShowRewards').checked = (impostazioni.show_rewards_to_customer ?? '1') !== '0';
+  $('setIssuer').value = impostazioni.wallet_issuer_id ?? '';
+  aggiornaStatoWallet(impostazioni.wallet_issuer_id);
 }
+
+/**
+ * Servono DUE pezzi: l'ID emittente (qui) e la chiave del service account
+ * (un segreto del Worker). Il messaggio dice quale dei due manca, altrimenti
+ * si resta a chiedersi perche' il pulsante non compare.
+ */
+function aggiornaStatoWallet(issuer) {
+  const segreto = stato.walletSegreto;
+  const el = $('walletStato');
+  if (segreto && issuer) {
+    el.textContent = 'Attivo: il pulsante "Aggiungi a Google Wallet" compare ai clienti.';
+  } else if (!segreto && !issuer) {
+    el.textContent = 'Non configurato. Servono l ID emittente qui sotto e la chiave del service account come segreto del Worker.';
+  } else if (!segreto) {
+    el.textContent = 'Manca la chiave del service account: wrangler secret put GOOGLE_WALLET_SA';
+  } else {
+    el.textContent = 'Manca l ID emittente qui sotto.';
+  }
+}
+
+$('salvaWallet').onclick = async () => {
+  try {
+    await api('/api/titolare/impostazioni', { body: { wallet_issuer_id: $('setIssuer').value } });
+    banner('Google Wallet aggiornato');
+    caricaImpostazioni();
+  } catch (e) { banner(e.message, 'err'); }
+};
 
 $('salvaImp').onclick = async () => {
   try {
