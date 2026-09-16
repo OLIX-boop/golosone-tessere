@@ -209,6 +209,74 @@ Il POST delle impostazioni scrive **solo una lista chiusa di chiavi**: senza
 quel filtro basterebbe una richiesta con `access_pin_hash` per scavalcare il
 PIN.
 
+## La tessera nel telefono
+
+I due sistemi sono asimmetrici, e conviene saperlo prima di promettere cose ai
+clienti.
+
+### Google Wallet - dinamico, gratuito, da configurare
+
+**Prima serve il deploy.** Su `localhost` non puo' funzionare: il link firmato
+dichiara a Google da quale dominio arriva, e un indirizzo locale Google non lo
+raggiunge. Quindi l'ordine e': prima in produzione, poi Wallet.
+
+Il pass sta nel Wallet del telefono e **il saldo si aggiorna da solo**: quando
+la cassa assegna i punti, il server riallinea il pass in sottofondo.
+
+Servono due pezzi:
+
+**1. La chiave del service account**, come segreto del Worker. Mai in database:
+un dump del database non deve consegnare anche la facolta' di emettere tessere
+a nome del negozio.
+
+```bash
+npm run wallet:chiave -- "C:/Users/andre/Downloads/service-account.json"
+```
+
+Lo script legge il file, controlla che sia davvero un account di servizio -
+meglio accorgersene subito che davanti a un errore di Google tre passaggi dopo -
+e lo carica codificato in base64. Il base64 non e' un vezzo: quel JSON contiene
+una chiave PEM su piu' righe, e passarla cruda a una variabile d'ambiente e' un
+invito a rovinarla.
+
+**2. L'ID emittente**, dalla console Google Pay & Wallet. Si incolla nel
+pannello titolare, scheda Impostazioni, riquadro Google Wallet.
+
+Finche' manca un pezzo il pulsante non compare e il resto funziona come prima;
+il pannello titolare dice quale dei due manca.
+
+Da sapere prima di partire: l'account emittente nasce in **modalita' demo** e
+puo' emettere pass solo verso account di prova. Per i clienti veri serve
+chiedere l'accesso alla pubblicazione - gratuito, ma con qualche giorno di
+attesa, quindi conviene avviare la richiesta presto.
+
+### Apple Wallet - statico, gratuito, niente da programmare
+
+Da iOS 27 chiunque puo' creare un pass senza sviluppatore e senza certificato,
+ma la funzione e' **avviata solo dall'utente sul telefono**: nessun sito puo'
+innescarla, e il pass resta congelato al momento in cui viene creato.
+
+Per questo qui non c'e' integrazione ma istruzioni sulla pagina cliente. Un
+dettaglio che non si puo' sbagliare: dicono di inquadrare **il cartoncino**, non
+lo schermo, perche' nessuno puo' inquadrare il proprio telefono col proprio
+telefono.
+
+Il pass su iPhone serve quindi a ritrovare il codice, non a leggere il saldo:
+per quello il cliente torna sulla pagina.
+
+I 99 euro l'anno dell'Apple Developer Program comprerebbero il saldo che si
+aggiorna e il pulsante sul sito. Per una pasticceria che parte non valgono;
+l'architettura non cambia se un giorno li si volesse spendere.
+
+### Se Google non risponde
+
+L'aggiornamento del pass parte in sottofondo e ingoia ogni errore: la cassa non
+deve fermarsi perche' Google e' giu'. Misurato con credenziali non valide, la
+cassa risponde in **44 millisecondi** e i fallimenti restano nei log. Nel
+peggiore dei casi il pass resta indietro finche' il cliente non riapre la sua
+pagina.
+
 ## Da fare
-- [ ] Pulsante "Aggiungi a Google Wallet" (pass dinamico, gratuito)
-- [ ] Istruzioni in-negozio per il pass Apple Wallet (iOS 27, statico)
+
+- [ ] Logo del negozio nel pass Google (serve un'immagine ospitata)
+- [ ] Ristampa di un lotto, marcando le tessere sostituite
