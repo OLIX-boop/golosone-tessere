@@ -3,8 +3,5 @@
 -- Per ora ce n'e' uno solo: la tortina. Resta comunque una riga di tabella e
 -- non un valore scritto nel codice, cosi' si cambia nome e soglia con un
 -- comando, e aggiungerne altri non richiede toccare nulla.
---
--- Soglia: 20 punti = 100 EUR di spesa. Da ricontrollare col margine reale
--- della tortina prima di stampare le tessere.
 INSERT INTO rewards (store_id, name, description, points_cost, sort_order) VALUES
   (1, 'Tortina', 'Una tortina a scelta', 20, 1);

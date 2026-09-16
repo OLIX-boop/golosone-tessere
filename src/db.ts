@@ -1,4 +1,3 @@
-import { computeEarn } from './points.ts';
 import { generateCode, normalizePhone } from './codes.ts';
 
 export type Env = { DB: D1Database };
@@ -10,14 +9,11 @@ export type Customer = {
   last_name: string | null;
   phone: string | null;
   points_balance: number;
-  cents_carry: number;
-  lifetime_cents: number;
+  points_lifetime: number;
   active: number;
   created_at: number;
   last_seen_at: number | null;
 };
-
-export type Operator = { id: number; name: string; role: 'admin' | 'cassa'; store_id: number };
 
 // ---------------------------------------------------------------- settings
 
@@ -37,10 +33,20 @@ export async function getSettingInt(db: D1Database, key: string, fallback: numbe
   return Number.isFinite(n) ? n : fallback;
 }
 
+export async function setSetting(db: D1Database, key: string, value: string) {
+  await db
+    .prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, unixepoch())
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
+    )
+    .bind(key, value)
+    .run();
+}
+
 // --------------------------------------------------------------- customers
 
 const CUSTOMER_COLS = `id, code, first_name, last_name, phone, points_balance,
-                       cents_carry, lifetime_cents, active, created_at, last_seen_at`;
+                       points_lifetime, active, created_at, last_seen_at`;
 
 export function findByCode(db: D1Database, code: string) {
   return db
@@ -115,95 +121,58 @@ export async function createCustomer(
 
 // ------------------------------------------------------------- transazioni
 
-export type AwardResult = {
-  customer: Customer;
-  pointsEarned: number;
-  centsToNextPoint: number;
-  transactionId: number;
-};
+export type MoveResult = { customer: Customer; transactionId: number };
 
 /**
- * Assegna i punti per uno scontrino.
+ * Assegna punti.
  *
- * Scrive DUE righe in una sola transazione D1, entrambe condizionate allo
- * stesso stato di partenza del cliente (lock ottimistico). Se nel frattempo
- * una seconda cassa ha toccato lo stesso cliente non si applica NULLA delle
- * due e si ritenta: mai un movimento a registro senza il saldo corrispondente,
- * mai un saldo cambiato senza il movimento che lo spiega.
+ * Scrive il movimento e aggiorna il saldo in un'unica transazione D1,
+ * condizionata al saldo di partenza (lock ottimistico). Se un'altra sessione
+ * ha toccato lo stesso cliente non si applica NULLA delle due e si ritenta:
+ * mai un movimento a registro senza il saldo corrispondente, mai un saldo
+ * cambiato senza il movimento che lo spiega.
  */
-export async function awardPoints(
+export async function addPoints(
   db: D1Database,
-  args: {
-    customerId: number;
-    operatorId: number;
-    storeId: number;
-    amountCents: number;
-    centsPerPoint: number;
-    note?: string;
-  },
-): Promise<AwardResult> {
+  args: { customerId: number; storeId: number; points: number; note?: string },
+): Promise<MoveResult> {
   for (let attempt = 0; attempt < 4; attempt++) {
     const before = await findById(db, args.customerId);
     if (!before) throw new Error('Cliente non trovato');
     if (!before.active) throw new Error('Tessera disattivata');
 
-    const earn = computeEarn(before.cents_carry, args.amountCents, args.centsPerPoint);
-    const guard = 'SELECT 1 FROM customers WHERE id = ? AND points_balance = ? AND cents_carry = ?';
-
     const [inserted, updated] = await db.batch([
       db
         .prepare(
-          `INSERT INTO transactions (customer_id, operator_id, store_id, kind, amount_cents, points_delta, note)
-           SELECT ?, ?, ?, 'earn', ?, ?, ?
-            WHERE EXISTS (${guard})`,
+          `INSERT INTO transactions (customer_id, store_id, kind, points_delta, note)
+           SELECT ?, ?, 'earn', ?, ?
+            WHERE EXISTS (SELECT 1 FROM customers WHERE id = ? AND points_balance = ?)`,
         )
-        .bind(
-          args.customerId,
-          args.operatorId,
-          args.storeId,
-          args.amountCents,
-          earn.pointsEarned,
-          args.note ?? null,
-          args.customerId,
-          before.points_balance,
-          before.cents_carry,
-        ),
+        .bind(args.customerId, args.storeId, args.points, args.note ?? null, args.customerId, before.points_balance),
       db
         .prepare(
           `UPDATE customers
-              SET points_balance = points_balance + ?,
-                  cents_carry    = ?,
-                  lifetime_cents = lifetime_cents + ?,
-                  last_seen_at   = unixepoch()
-            WHERE id = ? AND points_balance = ? AND cents_carry = ?`,
+              SET points_balance  = points_balance + ?,
+                  points_lifetime = points_lifetime + ?,
+                  last_seen_at    = unixepoch()
+            WHERE id = ? AND points_balance = ?`,
         )
-        .bind(
-          earn.pointsEarned,
-          earn.newCarry,
-          args.amountCents,
-          args.customerId,
-          before.points_balance,
-          before.cents_carry,
-        ),
+        .bind(args.points, args.points, args.customerId, before.points_balance),
     ]);
 
     if (updated.meta.changes === 1) {
-      const after = await findById(db, args.customerId);
       return {
-        customer: after!,
-        pointsEarned: earn.pointsEarned,
-        centsToNextPoint: earn.centsToNextPoint,
+        customer: (await findById(db, args.customerId))!,
         transactionId: Number(inserted.meta.last_row_id),
       };
     }
-    // lo stato e' cambiato sotto i piedi: rileggi e riprova
   }
-  throw new Error('Cliente occupato da un altra cassa, riprova');
+  throw new Error('Tessera occupata da un altra sessione, riprova');
 }
 
 export async function redeemReward(
   db: D1Database,
-  args: { customerId: number; operatorId: number; storeId: number; rewardId: number },
+  args: { customerId: number; storeId: number; rewardId: number },
 ) {
   const reward = await db
     .prepare('SELECT id, name, points_cost FROM rewards WHERE id = ? AND active = 1')
@@ -216,17 +185,15 @@ export async function redeemReward(
     if (!before) throw new Error('Cliente non trovato');
     if (before.points_balance < reward.points_cost) throw new Error('Punti insufficienti');
 
-    const guard = 'SELECT 1 FROM customers WHERE id = ? AND points_balance = ?';
     const [inserted, updated] = await db.batch([
       db
         .prepare(
-          `INSERT INTO transactions (customer_id, operator_id, store_id, kind, points_delta, reward_id, note)
-           SELECT ?, ?, ?, 'redeem', ?, ?, ?
-            WHERE EXISTS (${guard})`,
+          `INSERT INTO transactions (customer_id, store_id, kind, points_delta, reward_id, note)
+           SELECT ?, ?, 'redeem', ?, ?, ?
+            WHERE EXISTS (SELECT 1 FROM customers WHERE id = ? AND points_balance = ?)`,
         )
         .bind(
           args.customerId,
-          args.operatorId,
           args.storeId,
           -reward.points_cost,
           reward.id,
@@ -250,26 +217,25 @@ export async function redeemReward(
       };
     }
   }
-  throw new Error('Cliente occupato da un altra cassa, riprova');
+  throw new Error('Tessera occupata da un altra sessione, riprova');
 }
 
 /**
  * Annulla un movimento recente. Non cancella nulla: marca la riga come
- * annullata e rimette a posto il saldo, cosi' il registro resta leggibile
- * e si vede chi ha annullato che cosa.
+ * annullata e rimette a posto il saldo, cosi' resta visibile che c'e' stata
+ * una correzione invece di far sparire il movimento.
  */
 export async function voidTransaction(
   db: D1Database,
-  args: { transactionId: number; operatorId: number; windowMinutes: number; centsPerPoint: number },
+  args: { transactionId: number; windowMinutes: number },
 ) {
   const tx = await db
-    .prepare('SELECT * FROM transactions WHERE id = ?')
+    .prepare('SELECT id, customer_id, kind, points_delta, voided_at, created_at FROM transactions WHERE id = ?')
     .bind(args.transactionId)
     .first<{
       id: number;
       customer_id: number;
       kind: string;
-      amount_cents: number;
       points_delta: number;
       voided_at: number | null;
       created_at: number;
@@ -282,30 +248,20 @@ export async function voidTransaction(
     throw new Error(`Si puo annullare solo entro ${args.windowMinutes} minuti`);
   }
 
-  const customer = await findById(db, tx.customer_id);
-  if (!customer) throw new Error('Cliente non trovato');
-
-  // Il carry torna indietro in modulo, cosi' resta coerente anche se nel
-  // frattempo e' arrivato un altro acquisto sullo stesso cliente.
-  const cpp = args.centsPerPoint;
-  const carryBack =
-    tx.kind === 'earn' ? (((customer.cents_carry - tx.amount_cents) % cpp) + cpp) % cpp : customer.cents_carry;
-
   const [voided] = await db.batch([
     db
-      .prepare(
-        'UPDATE transactions SET voided_at = unixepoch(), voided_by = ? WHERE id = ? AND voided_at IS NULL',
-      )
-      .bind(args.operatorId, tx.id),
+      .prepare('UPDATE transactions SET voided_at = unixepoch() WHERE id = ? AND voided_at IS NULL')
+      .bind(tx.id),
     db
       .prepare(
         `UPDATE customers
-            SET points_balance = points_balance - ?,
-                cents_carry    = ?,
-                lifetime_cents = lifetime_cents - ?
+            SET points_balance  = points_balance - ?,
+                points_lifetime = points_lifetime - ?
           WHERE id = ?`,
       )
-      .bind(tx.points_delta, carryBack, tx.kind === 'earn' ? tx.amount_cents : 0, tx.customer_id),
+      // points_lifetime conta solo i punti guadagnati: un riscatto annullato
+      // non deve gonfiarlo indietro.
+      .bind(tx.points_delta, tx.points_delta > 0 ? tx.points_delta : 0, tx.customer_id),
   ]);
   if (voided.meta.changes !== 1) throw new Error('Annullamento non riuscito');
   return (await findById(db, tx.customer_id))!;
@@ -314,11 +270,10 @@ export async function voidTransaction(
 export async function customerHistory(db: D1Database, customerId: number, limit = 20) {
   const { results } = await db
     .prepare(
-      `SELECT t.id, t.kind, t.amount_cents, t.points_delta, t.note, t.created_at,
-              t.voided_at, o.name AS operator_name, r.name AS reward_name
+      `SELECT t.id, t.kind, t.points_delta, t.note, t.created_at, t.voided_at,
+              r.name AS reward_name
          FROM transactions t
-         LEFT JOIN operators o ON o.id = t.operator_id
-         LEFT JOIN rewards   r ON r.id = t.reward_id
+         LEFT JOIN rewards r ON r.id = t.reward_id
         WHERE t.customer_id = ?
         ORDER BY t.id DESC LIMIT ?`,
     )
