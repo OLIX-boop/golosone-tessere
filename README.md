@@ -276,7 +276,26 @@ cassa risponde in **44 millisecondi** e i fallimenti restano nei log. Nel
 peggiore dei casi il pass resta indietro finche' il cliente non riapre la sua
 pagina.
 
+### Il logo e obbligatorio
+
+Google rifiuta la classe senza logo: *"LoyaltyClass cannot be created without a
+program logo"*. L'immagine deve stare su un indirizzo HTTPS pubblico, quindi la
+serve il Worker stesso da `public/logo.png`.
+
+Quello attuale e' un segnaposto generato. Per metterci il logo vero basta
+sostituire il file con un PNG quadrato di almeno 660x660, **sfondo pieno e non
+trasparente** perche' Google lo mostra su fondi di colore variabile. Per
+rigenerare il segnaposto dopo aver cambiato i colori:
+
+```bash
+npm run logo
+```
+
+Il logo cambia solo alla creazione della classe. Se lo sostituisci dopo,
+la classe esistente va aggiornata a mano dalla console Google.
+
 ## Da fare
 
-- [ ] Logo del negozio nel pass Google (serve un'immagine ospitata)
 - [ ] Ristampa di un lotto, marcando le tessere sostituite
+- [ ] Chiedere a Google l'accesso alla pubblicazione (finche' l'emittente e'
+      in modalita' demo, i pass funzionano solo per gli account di prova)
