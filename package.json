@@ -13,10 +13,12 @@
     "db:seed": "wrangler d1 execute tessere --local --file=./migrations/0002_premio.sql"
   },
   "dependencies": {
-    "hono": "^4.6.14"
+    "hono": "^4.6.14",
+    "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260916.1",
+    "jsqr": "^1.4.0",
     "typescript": "^5.7.2",
     "wrangler": "^4.132.0"
   },

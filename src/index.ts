@@ -12,9 +12,14 @@ import {
 } from './auth.ts';
 import { isValidCode, normalizeCode, parseInput } from './codes.ts';
 import { parsePoints, pointsLabel } from './points.ts';
+import { qrSvg } from './qr.ts';
 import {
+  activateCard,
   addPoints,
+  createCardBatch,
   createCustomer,
+  listBatch,
+  listBatches,
   customerHistory,
   findByCode,
   getSettingInt,
@@ -71,7 +76,7 @@ app.get('/api/bootstrap', async (c) => {
 /** Imposta il PIN del negozio. Funziona solo finche' non ne esiste uno. */
 app.post('/api/setup', async (c) => {
   const settings = await getSettings(c.env.DB);
-  if (settings.access_pin_hash) return c.json(fail('PIN gia impostato'), 409);
+  if (settings.access_pin_hash) return c.json(fail('PIN già impostato'), 409);
 
   const { pin } = await c.req.json<{ pin?: string }>();
   if (!pin || !/^\d{4,10}$/.test(pin)) {
@@ -188,7 +193,7 @@ app.get('/api/cassa/lookup', async (c) => {
 
 app.post('/api/cassa/customers', async (c) => {
   const body = await c.req.json<{ firstName?: string; lastName?: string; phone?: string; consent?: boolean }>();
-  if (!body.firstName?.trim()) return c.json(fail('Il nome e obbligatorio'), 400);
+  if (!body.firstName?.trim()) return c.json(fail('Il nome è obbligatorio'), 400);
 
   const customer = await createCustomer(c.env.DB, {
     firstName: body.firstName,
@@ -250,6 +255,42 @@ app.post('/api/cassa/void', async (c) => {
   }
 });
 
+// ------------------------------------------------------- lotti di tessere
+
+app.post('/api/cassa/cards/batch', async (c) => {
+  const { count } = await c.req.json<{ count?: number }>();
+  try {
+    const result = await createCardBatch(c.env.DB, { count: Number(count), storeId: STORE_ID });
+    return c.json({ ok: true, batch: result.batch, count: result.cards.length });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
+});
+
+app.get('/api/cassa/batches', async (c) =>
+  c.json({ ok: true, batches: await listBatches(c.env.DB) }),
+);
+
+/** Consegna della tessera: da vergine a intestata. */
+app.post('/api/cassa/activate', async (c) => {
+  const body = await c.req.json<{
+    customerId?: number; firstName?: string; lastName?: string; phone?: string; consent?: boolean;
+  }>();
+  if (!body.customerId) return c.json(fail('Tessera mancante'), 400);
+  try {
+    const customer = await activateCard(c.env.DB, {
+      customerId: body.customerId,
+      firstName: body.firstName ?? '',
+      lastName: body.lastName,
+      phone: body.phone,
+      consent: body.consent,
+    });
+    return c.json({ ok: true, customer });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
+});
+
 app.get('/api/cassa/rewards', async (c) =>
   c.json({ ok: true, rewards: await listRewards(c.env.DB, STORE_ID) }),
 );
@@ -258,6 +299,93 @@ app.get('/api/cassa/history', async (c) => {
   const id = Number(c.req.query('customerId'));
   if (!id) return c.json(fail('Cliente mancante'), 400);
   return c.json({ ok: true, history: await customerHistory(c.env.DB, id, 20) });
+});
+
+// ============================================================ stampa tessere
+
+/**
+ * Foglio di tessere pronto da stampare.
+ *
+ * Misure in millimetri e non in pixel: e' l'unica unita' che il browser
+ * traduce fedelmente in stampa a prescindere dallo zoom e dai DPI. Tessera
+ * 85x55mm (formato biglietto da visita), dieci per foglio A4.
+ *
+ * L'URL del QR si costruisce dall'origine della richiesta: cosi' il foglio
+ * stampato in locale punta a localhost e quello stampato in produzione al
+ * dominio vero, senza configurazione da ricordare.
+ */
+app.get('/stampa/:batch', requireSession, async (c) => {
+  const batch = c.req.param('batch');
+  const cards = await listBatch(c.env.DB, batch);
+  if (cards.length === 0) return c.html('<p>Lotto non trovato</p>', 404);
+
+  const settings = await getSettings(c.env.DB);
+  const storeName = settings.store_name ?? 'Pasticceria';
+  const origin = new URL(c.req.url).origin;
+
+  const cardsHtml = cards
+    .map((card) => {
+      const url = `${origin}/c/${card.code}`;
+      return `<div class="tessera">
+        <div class="testo">
+          <p class="negozio">${esc(storeName)}</p>
+          <p class="titolo">Tessera punti</p>
+          <p class="istruzioni">Inquadra il codice<br>per vedere i tuoi punti</p>
+          <p class="codice">${esc(card.code)}</p>
+        </div>
+        <div class="qr">${qrSvg(url, { size: 108 })}</div>
+      </div>`;
+    })
+    .join('');
+
+  return c.html(`<!doctype html><html lang="it"><head>
+<meta charset="utf-8"><title>Tessere ${esc(batch)}</title>
+<style>
+  /* Niente margini del browser: le misure delle tessere devono essere esatte,
+     altrimenti il taglio non torna. */
+  @page { size: A4; margin: 10mm; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+         background:#f4f1ec; color:#2b2420; }
+
+  .barra { padding:16px; text-align:center; background:#fff; border-bottom:1px solid #e5ded5; }
+  .barra button { font:inherit; font-weight:600; background:#8c4a2f; color:#fff;
+                  border:0; border-radius:10px; padding:12px 22px; cursor:pointer; }
+  .barra p { margin:.5em 0 0; color:#8a7f76; font-size:14px; }
+
+  .foglio { width:190mm; margin:14px auto; display:grid;
+            grid-template-columns:repeat(2, 85mm); grid-auto-rows:55mm;
+            gap:4mm; justify-content:center; }
+
+  .tessera { width:85mm; height:55mm; border:1px dashed #c9bfb4; border-radius:3mm;
+             padding:5mm; display:flex; align-items:center; gap:4mm;
+             background:#fff; overflow:hidden; }
+  .testo { flex:1; min-width:0; }
+  .negozio { margin:0; font-size:7pt; letter-spacing:.14em; text-transform:uppercase; color:#8a7f76; }
+  .titolo { margin:1mm 0 0; font-size:13pt; font-weight:700; }
+  .istruzioni { margin:2mm 0 0; font-size:7pt; line-height:1.4; color:#8a7f76; }
+  /* Il codice in chiaro sotto il QR salva la giornata quando il lettore non
+     legge, lo schermo e' crepato o il cliente detta il codice al telefono. */
+  .codice { margin:2.5mm 0 0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+            font-size:12pt; font-weight:700; letter-spacing:.16em; }
+  .qr { flex:0 0 auto; line-height:0; }
+  .qr svg { width:30mm; height:30mm; }
+
+  @media print {
+    body { background:#fff; }
+    .barra { display:none; }
+    .foglio { margin:0; gap:0; grid-template-columns:repeat(2, 95mm); grid-auto-rows:59.4mm; }
+    .tessera { width:95mm; height:59.4mm; border:1px dashed #ddd; }
+    /* Una tessera non deve mai essere spezzata a meta' dal salto pagina. */
+    .tessera { break-inside: avoid; page-break-inside: avoid; }
+  }
+</style></head><body>
+  <div class="barra">
+    <button onclick="window.print()">Stampa ${cards.length} tessere</button>
+    <p>Lotto ${esc(batch)} &middot; cartoncino consigliato 250-300 g/m&sup2;</p>
+  </div>
+  <div class="foglio">${cardsHtml}</div>
+</body></html>`);
 });
 
 // =========================================================== pagina cliente
@@ -347,7 +475,7 @@ function customerPage(data: {
   </header>
 
   ${reachable.length ? `<section class="card ok">
-    <h2>Puoi gia ritirare</h2>
+    <h2>Puoi già ritirare</h2>
     <ul>${reachable.map((r) => `<li>${esc(r.name)} <span>${r.points_cost} punti</span></li>`).join('')}</ul>
     <p class="hint">Chiedilo in cassa alla prossima visita.</p>
   </section>` : ''}

@@ -52,6 +52,22 @@ Il blocco dopo 8 tentativi falliti riguarda **solo i nuovi accessi**: una cassa
 gia' sbloccata continua a lavorare, quindi nessuno puo' fermarti il negozio
 sbagliando PIN da fuori.
 
+### Le tessere esistono prima dei clienti
+
+Non si puo' stampare un cartoncino mentre il cliente aspetta al banco. Quindi le
+tessere si stampano in lotti, restano in una scatola alla cassa, e si attivano
+al momento della consegna: si scansiona la tessera vergine, si scrive il nome,
+fatto.
+
+Finche' non e' consegnata, una tessera ha `first_name` e `activated_at` a NULL.
+Non puo' ricevere punti (scansionare il cartoncino sbagliato dalla scatola non
+deve regalare niente a nessuno) e non compare nelle ricerche per nome o
+telefono.
+
+Il campo `batch` raggruppa le tessere stampate insieme, cosi' un foglio
+rovinato si ristampa senza generare codici nuovi e senza sprecare quelli gia'
+stampati.
+
 ### L'alfabeto dei codici esclude i caratteri ambigui
 
 Esclusi `0 O 1 I L S U V`. Serve a due scopi: il cliente puo' dettare il codice
@@ -133,9 +149,28 @@ saldo, visto che il premio si ritira comunque in negozio:
 npx wrangler d1 execute tessere --local --command "UPDATE settings SET value='0' WHERE key='show_rewards_to_customer'"
 ```
 
+## Stampare le tessere
+
+Dal pannello cassa, riquadro "Tessere da stampare": scegli quante e premi
+**Crea lotto**. Si apre il foglio pronto, `Stampa` manda al browser.
+
+Dieci tessere per foglio A4, formato biglietto da visita (85x55mm). Le misure
+sono in millimetri e non in pixel: e' l'unica unita' che il browser traduce
+fedelmente in stampa a prescindere da zoom e DPI, e il taglio deve tornare.
+
+Consigliato cartoncino da 250-300 g/m2.
+
+Il QR contiene l'indirizzo della pagina cliente e viene costruito
+**dall'origine della richiesta**: il foglio stampato in locale punta a
+localhost, quello stampato in produzione al dominio vero. Non c'e' niente da
+configurare, ma significa anche che **le tessere vanno stampate dal dominio
+definitivo**, altrimenti i QR puntano a un indirizzo che non esiste piu'.
+
+Sotto ogni QR c'e' il codice in chiaro: salva la giornata quando il lettore non
+legge, lo schermo e' crepato, o il cliente detta il codice al telefono.
+
 ## Da fare
 
 - [ ] Pannello titolare: premio, PIN, report di giornata
-- [ ] Stampa tessere: PDF con QR e codice in chiaro
 - [ ] Pulsante "Aggiungi a Google Wallet" (pass dinamico, gratuito)
 - [ ] Istruzioni in-negozio per il pass Apple Wallet (iOS 27, statico)

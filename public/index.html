@@ -84,7 +84,7 @@
   <!-- ============ Primo avvio: PIN del negozio ============ -->
   <section id="setupView" class="card" hidden>
     <h2>Primo avvio</h2>
-    <p class="hint">Scegli il PIN del negozio. E uno solo, condiviso da chi sta in cassa.</p>
+    <p class="hint">Scegli il PIN del negozio. È uno solo, condiviso da chi sta in cassa.</p>
     <div class="row" style="margin-top:14px">
       <div class="grow"><input id="setupPin" placeholder="PIN (4-10 cifre)" inputmode="numeric" autocomplete="off"></div>
       <button class="primary" id="setupBtn">Imposta PIN</button>
@@ -156,9 +156,11 @@
       </div>
     </div>
 
-    <div id="newView" class="card" hidden>
-      <h2>Nuova tessera</h2>
-      <div class="row">
+    <!-- Consegna di una tessera vergine: si arriva qui scansionandola -->
+    <div id="activateView" class="card" hidden>
+      <h2>Consegna tessera</h2>
+      <p class="hint">Tessera <span class="code" id="actCode"></span> &mdash; ancora senza intestatario.</p>
+      <div class="row" style="margin-top:14px">
         <div class="grow"><input id="nFirst" placeholder="Nome *" autocomplete="off"></div>
         <div class="grow"><input id="nLast" placeholder="Cognome" autocomplete="off"></div>
       </div>
@@ -170,12 +172,22 @@
         <span class="hint" style="margin:0">Acconsente a ricevere comunicazioni sulle promozioni</span>
       </label>
       <div class="row" style="margin-top:14px">
-        <button class="primary" id="createBtn">Crea tessera</button>
-        <button class="ghost" id="newCancel">Annulla</button>
+        <button class="primary" id="activateBtn">Attiva tessera</button>
+        <button class="ghost" id="activateCancel">Annulla</button>
       </div>
     </div>
 
-    <div class="row"><button class="ghost" id="newCustomerBtn">+ Nuova tessera</button></div>
+    <!-- Scorta di tessere da stampare -->
+    <div class="card">
+      <h2>Tessere da stampare</h2>
+      <p class="hint">Le tessere si stampano prima e stanno in una scatola alla cassa:
+         si consegnano già pronte e si attivano scansionandole.</p>
+      <div class="row" style="margin-top:14px">
+        <input id="batchCount" inputmode="numeric" value="20" style="max-width:110px">
+        <button class="primary" id="batchBtn">Crea lotto</button>
+      </div>
+      <ul class="rewards" id="batchList" style="margin-top:14px"></ul>
+    </div>
   </section>
 </div>
 
@@ -241,7 +253,7 @@ async function boot() {
   $('shopName').textContent = b.storeName;
   document.title = 'Cassa - ' + b.storeName;
   drawQuickButtons();
-  if (state.loggedIn) await loadRewards();
+  if (state.loggedIn) { await loadRewards(); loadBatches(); }
   render();
 }
 
@@ -273,6 +285,7 @@ async function doLogin() {
     pin = ''; drawPin();
     state.loggedIn = true;
     await loadRewards();
+    loadBatches();
     banner('Cassa sbloccata');
     render();
   } catch (e) { pin = ''; drawPin(); banner(e.message, 'err', 8000); }
@@ -330,10 +343,15 @@ $('pickCancel').onclick = () => { $('pickView').hidden = true; focusScan(); };
 
 function showCustomer(c, history) {
   state.customer = c;
+  $('pickView').hidden = true;
+
+  // Tessera appena uscita dalla scatola: non ha intestatario, quindi la
+  // schermata giusta e' la consegna, non l'assegnazione punti.
+  if (c && !c.activated_at) return showActivation(c);
+
+  $('activateView').hidden = true;
   $('custView').hidden = !c;
   if (!c) { focusScan(); return; }
-  $('pickView').hidden = true;
-  $('newView').hidden = true;
   $('custName').textContent = c.first_name + ' ' + (c.last_name || '');
   $('custCode').textContent = c.code;
   $('custPoints').textContent = c.points_balance;
@@ -439,28 +457,70 @@ function drawRewards() {
   });
 }
 
-// ------------------------------------------------------------- nuovo cliente
-$('newCustomerBtn').onclick = () => {
-  $('newView').hidden = false;
+// --------------------------------------------------- consegna della tessera
+function showActivation(card) {
+  state.customer = card;
   $('custView').hidden = true;
-  $('pickView').hidden = true;
+  $('activateView').hidden = false;
+  $('actCode').textContent = card.code;
+  ['nFirst', 'nLast', 'nPhone'].forEach((i) => ($(i).value = ''));
+  $('nConsent').checked = false;
   setTimeout(() => $('nFirst').focus(), 30);
+}
+
+$('activateCancel').onclick = () => {
+  $('activateView').hidden = true;
+  state.customer = null;
+  focusScan();
 };
-$('newCancel').onclick = () => { $('newView').hidden = true; focusScan(); };
-$('createBtn').onclick = async () => {
+
+$('nFirst').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('activateBtn').click(); }
+});
+
+$('activateBtn').onclick = async () => {
+  if (!state.customer) return;
+  $('activateBtn').disabled = true;
   try {
-    const r = await api('/api/cassa/customers', {
+    const r = await api('/api/cassa/activate', {
       body: {
+        customerId: state.customer.id,
         firstName: $('nFirst').value, lastName: $('nLast').value,
         phone: $('nPhone').value, consent: $('nConsent').checked,
       },
     });
-    ['nFirst', 'nLast', 'nPhone'].forEach((i) => ($(i).value = ''));
-    $('nConsent').checked = false;
-    $('newView').hidden = true;
-    banner('Tessera creata: ' + r.customer.code, 'ok', 10000);
+    $('activateView').hidden = true;
+    banner('Tessera di ' + r.customer.first_name + ' attivata');
     showCustomer(r.customer, []);
+    loadBatches();
   } catch (e) { banner(e.message, 'err'); }
+  finally { $('activateBtn').disabled = false; }
+};
+
+// ------------------------------------------------------- lotti da stampare
+async function loadBatches() {
+  try {
+    const { batches } = await api('/api/cassa/batches');
+    $('batchList').innerHTML = batches.length
+      ? batches.map((b) => `<li>
+          <span>${b.batch}<br><span class="hint">${b.vergini} di ${b.totale} ancora da consegnare</span></span>
+          <a class="ghost" style="padding:8px 14px;border-radius:10px;text-decoration:none"
+             href="/stampa/${encodeURIComponent(b.batch)}" target="_blank">Stampa</a>
+        </li>`).join('')
+      : '<li><span class="hint">Nessun lotto ancora. Creane uno per stampare le prime tessere.</span></li>';
+  } catch { /* la scorta tessere non deve mai impedire di lavorare in cassa */ }
+}
+
+$('batchBtn').onclick = async () => {
+  const n = Number($('batchCount').value);
+  $('batchBtn').disabled = true;
+  try {
+    const r = await api('/api/cassa/cards/batch', { body: { count: n } });
+    banner(`Lotto di ${r.count} tessere pronto da stampare`, 'ok', 8000);
+    await loadBatches();
+    window.open('/stampa/' + encodeURIComponent(r.batch), '_blank');
+  } catch (e) { banner(e.message, 'err'); }
+  finally { $('batchBtn').disabled = false; }
 };
 
 // Se si clicca a vuoto il focus torna al campo scansione: il lettore barcode
