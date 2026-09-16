@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "golosone-tessere",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // I file statici (pannello cassa) vengono serviti direttamente dalla CDN.
+  // Le rotte che non corrispondono a un file finiscono al Worker: e' cosi'
+  // che /api/* e /c/:codice arrivano al codice.
+  "assets": {
+    "directory": "./public"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tessere",
+      // In locale l'id non viene usato. Va sostituito con quello vero
+      // dopo `wrangler d1 create tessere` per il deploy in produzione.
+      "database_id": "local-dev-placeholder"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}

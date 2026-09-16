@@ -1,0 +1,28 @@
+{
+  "name": "golosone-tessere",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute tessere --local --file=./migrations/0001_init.sql",
+    "db:remote": "wrangler d1 execute tessere --remote --file=./migrations/0001_init.sql",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/",
+    "db:seed": "wrangler d1 execute tessere --local --file=./migrations/0002_premi_esempio.sql"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260916.1",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.132.0"
+  },
+  "allowScripts": {
+    "sharp@0.33.5": true,
+    "esbuild@0.28.1": true,
+    "workerd@1.20260915.1": true
+  }
+}

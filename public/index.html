@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Cassa - Tessere punti</title>
+<style>
+  :root{
+    --bg:#f4f1ec; --card:#fff; --ink:#2b2420; --muted:#8a7f76;
+    --line:#e5ded5; --accent:#8c4a2f; --accent-ink:#fff;
+    --ok:#2f7a4d; --ok-bg:#e8f5ed; --err:#b3261e; --err-bg:#fdeceb;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 60px}
+  h1,h2,h3{margin:0 0 .4em}
+  button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:12px 18px}
+  .primary{background:var(--accent);color:var(--accent-ink);font-weight:600}
+  .primary:disabled{opacity:.45;cursor:not-allowed}
+  .ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+  .danger{background:transparent;color:var(--err);border:1px solid var(--err)}
+  input,select{font:inherit;padding:12px 14px;border:1px solid var(--line);
+               border-radius:10px;background:#fff;color:var(--ink);width:100%}
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+        padding:20px;margin-bottom:16px}
+  .muted{color:var(--muted)}
+  .hint{color:var(--muted);font-size:14px;margin:.3em 0 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .grow{flex:1 1 200px}
+  .banner{padding:14px 16px;border-radius:10px;margin-bottom:16px;font-weight:600}
+  .banner.ok{background:var(--ok-bg);color:var(--ok)}
+  .banner.err{background:var(--err-bg);color:var(--err)}
+  [hidden]{display:none!important}
+
+  /* Barra di stato sempre visibile: chi e' loggato, in che negozio */
+  .topbar{display:flex;justify-content:space-between;align-items:center;
+          gap:12px;margin-bottom:18px;flex-wrap:wrap}
+  .topbar .who{font-size:14px;color:var(--muted)}
+
+  /* Campo scansione: deve essere il posto piu' ovvio dello schermo */
+  #scanForm input{font-size:22px;padding:18px;letter-spacing:.04em}
+  .scanlabel{font-weight:600;margin-bottom:8px;display:block}
+
+  .cust{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+  .balance{text-align:right}
+  .balance b{font-size:40px;line-height:1;display:block}
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;
+        font-size:15px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  td{padding:7px 0;border-bottom:1px solid var(--line)}
+  tr.voided td{opacity:.45;text-decoration:line-through}
+  td.delta{text-align:right;font-weight:600;white-space:nowrap}
+
+  .pinpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:260px;margin-top:14px}
+  /* I tasti numerici sono neutri, ma OK resta accentato: la regola generica
+     sotto sovrascriveva .primary lasciando testo bianco su fondo bianco. */
+  .pinpad button{background:#fff;border:1px solid var(--line);font-size:22px;padding:16px}
+  .pinpad button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  .pindots{font-size:30px;letter-spacing:.35em;min-height:40px;color:var(--accent)}
+  ul.rewards{list-style:none;padding:0;margin:0}
+  ul.rewards li{display:flex;justify-content:space-between;align-items:center;gap:12px;
+                padding:10px 0;border-bottom:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <h1 id="shopName">Cassa</h1>
+    <div class="row">
+      <span class="who" id="who"></span>
+      <button class="ghost" id="logoutBtn" hidden>Esci</button>
+    </div>
+  </div>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <!-- ============ Primo avvio: creazione del titolare ============ -->
+  <section id="setupView" class="card" hidden>
+    <h2>Primo avvio</h2>
+    <p class="hint">Crea l'account del titolare. Gli altri operatori si aggiungono dopo.</p>
+    <div class="row" style="margin-top:14px">
+      <div class="grow"><input id="setupName" placeholder="Nome del titolare" autocomplete="off"></div>
+      <div class="grow"><input id="setupPin" placeholder="PIN (4-8 cifre)" inputmode="numeric" autocomplete="off"></div>
+    </div>
+    <p class="hint">Il PIN serve a sapere chi ha assegnato cosa, non a proteggere da un hacker: ogni movimento resta tracciato col nome.</p>
+    <div class="row" style="margin-top:14px"><button class="primary" id="setupBtn">Crea account</button></div>
+  </section>
+
+  <!-- ============ Login operatore ============ -->
+  <section id="loginView" class="card" hidden>
+    <h2>Chi e in cassa</h2>
+    <select id="operatorSel" style="margin-bottom:14px"></select>
+    <div class="pindots" id="pinDots"></div>
+    <div class="pinpad">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <button class="ghost" data-k="del">&larr;</button>
+      <button data-k="0">0</button>
+      <button class="primary" data-k="ok">OK</button>
+    </div>
+  </section>
+
+  <!-- ============ Operativo ============ -->
+  <section id="mainView" hidden>
+
+    <form id="scanForm" class="card">
+      <label class="scanlabel" for="scanInput">Scansiona la tessera</label>
+      <input id="scanInput" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="Tessera, codice, telefono o nome">
+      <p class="hint">Lo stesso campo accetta la scansione, il codice digitato, il telefono o il nome.</p>
+    </form>
+
+    <!-- piu' clienti trovati -->
+    <div id="pickView" class="card" hidden>
+      <h2>Quale cliente?</h2>
+      <ul class="rewards" id="pickList"></ul>
+      <div class="row" style="margin-top:12px"><button class="ghost" id="pickCancel">Annulla</button></div>
+    </div>
+
+    <!-- cliente selezionato -->
+    <div id="custView" hidden>
+      <div class="card">
+        <div class="cust">
+          <div>
+            <h2 id="custName"></h2>
+            <p class="code" id="custCode"></p>
+            <p class="hint" id="custCarry"></p>
+          </div>
+          <div class="balance">
+            <b id="custPoints">0</b>
+            <span class="muted">punti</span>
+          </div>
+        </div>
+
+        <form id="awardForm" class="row" style="margin-top:18px">
+          <div class="grow">
+            <input id="amountInput" inputmode="decimal" autocomplete="off"
+                   placeholder="Importo scontrino, es. 12,50">
+          </div>
+          <button class="primary" id="awardBtn" type="submit">Assegna punti</button>
+          <button class="ghost" type="button" id="closeCust">Chiudi</button>
+        </form>
+      </div>
+
+      <div class="card" id="rewardsCard" hidden>
+        <h2>Premi disponibili</h2>
+        <ul class="rewards" id="rewardsList"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Ultimi movimenti</h2>
+        <table id="histTable"></table>
+      </div>
+    </div>
+
+    <!-- nuovo cliente -->
+    <div id="newView" class="card" hidden>
+      <h2>Nuova tessera</h2>
+      <div class="row">
+        <div class="grow"><input id="nFirst" placeholder="Nome *" autocomplete="off"></div>
+        <div class="grow"><input id="nLast" placeholder="Cognome" autocomplete="off"></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><input id="nPhone" placeholder="Telefono (per ritrovare la tessera)" inputmode="tel" autocomplete="off"></div>
+      </div>
+      <label class="row" style="margin-top:12px;gap:8px">
+        <input type="checkbox" id="nConsent" style="width:auto">
+        <span class="hint" style="margin:0">Acconsente a ricevere comunicazioni sulle promozioni</span>
+      </label>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="createBtn">Crea tessera</button>
+        <button class="ghost" id="newCancel">Annulla</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="ghost" id="newCustomerBtn">+ Nuova tessera</button>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { me: null, customer: null, lastTx: null, rewards: [], centsPerPoint: 500 };
+
+const fmt = (cents) => {
+  const s = cents < 0 ? '-' : '';
+  const a = Math.abs(cents);
+  return s + Math.floor(a / 100) + ',' + String(a % 100).padStart(2, '0');
+};
+
+let bannerTimer;
+function banner(msg, kind = 'ok', ms = 4000) {
+  clearTimeout(bannerTimer);
+  const el = $('banner');
+  el.textContent = msg;
+  el.className = 'banner ' + kind;
+  el.hidden = false;
+  if (ms) bannerTimer = setTimeout(() => { el.hidden = true; }, ms);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    method: opts.body ? (opts.method || 'POST') : (opts.method || 'GET'),
+  });
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (res.status === 401 && state.me) { state.me = null; render(); }
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Errore di rete');
+  return data;
+}
+
+// ------------------------------------------------------------- viste
+function render() {
+  const setup = state.needsSetup;
+  $('setupView').hidden = !setup;
+  $('loginView').hidden = setup || !!state.me;
+  $('mainView').hidden = setup || !state.me;
+  $('logoutBtn').hidden = !state.me;
+  $('who').textContent = state.me ? state.me.name + (state.me.role === 'admin' ? ' (titolare)' : '') : '';
+  if (state.me) focusScan();
+}
+
+function focusScan() {
+  // Il campo scansione deve essere sempre pronto: il lettore barcode "digita"
+  // e preme Invio, quindi se il focus e' altrove la scansione si perde.
+  const el = $('scanInput');
+  if (el && !el.hidden) setTimeout(() => el.focus(), 30);
+}
+
+async function boot() {
+  const b = await api('/api/bootstrap');
+  state.needsSetup = b.needsSetup;
+  state.me = b.me;
+  state.centsPerPoint = b.centsPerPoint;
+  $('shopName').textContent = b.storeName;
+  document.title = 'Cassa - ' + b.storeName;
+  const sel = $('operatorSel');
+  sel.innerHTML = b.operators.map((o) => `<option value="${o.id}">${o.name}</option>`).join('');
+  render();
+}
+
+// ------------------------------------------------------------- setup
+$('setupBtn').onclick = async () => {
+  try {
+    await api('/api/setup', { body: { name: $('setupName').value, pin: $('setupPin').value } });
+    banner('Account creato, ora entra col PIN');
+    await boot();
+  } catch (e) { banner(e.message, 'err'); }
+};
+
+// ------------------------------------------------------------- login
+let pin = '';
+function drawPin() { $('pinDots').textContent = '•'.repeat(pin.length); }
+document.querySelectorAll('.pinpad button').forEach((b) => {
+  b.onclick = async () => {
+    const k = b.dataset.k;
+    if (k === 'del') pin = pin.slice(0, -1);
+    else if (k === 'ok') return doLogin();
+    else if (pin.length < 8) pin += k;
+    drawPin();
+  };
+});
+async function doLogin() {
+  try {
+    const r = await api('/api/login', { body: { operatorId: Number($('operatorSel').value), pin } });
+    state.me = r.operator;
+    pin = ''; drawPin();
+    banner('Ciao ' + r.operator.name);
+    await loadRewards();
+    render();
+  } catch (e) { pin = ''; drawPin(); banner(e.message, 'err'); }
+}
+$('logoutBtn').onclick = async () => {
+  await api('/api/logout', { method: 'POST', body: {} });
+  state.me = null; state.customer = null;
+  showCustomer(null);
+  render();
+};
+
+// ------------------------------------------------------------- ricerca
+// I lettori barcode chiudono la scansione con Invio (alcuni con Tab). NON ci
+// affidiamo alla submission implicita del form: su un campo singolo senza
+// bottone e' un comportamento che i browser trattano in modo incoerente, e se
+// fallisce la scansione successiva si ACCODA a quella vecchia, mandando i
+// punti a un codice inesistente. Intercettiamo il tasto e basta.
+$('scanInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    doLookup();
+  }
+});
+$('scanForm').onsubmit = (e) => { e.preventDefault(); doLookup(); };
+
+async function doLookup() {
+  const q = $('scanInput').value.trim();
+  if (!q) return;
+  try {
+    const r = await api('/api/cassa/lookup?q=' + encodeURIComponent(q));
+    $('scanInput').value = '';
+    if (r.match === 'multiple') return showPicker(r.customers);
+    showCustomer(r.customer, r.history);
+  } catch (e2) {
+    // Testo selezionato, non cancellato: l'operatore vede cosa e' arrivato,
+    // ma la scansione seguente lo sovrascrive invece di accodarsi.
+    $('scanInput').select();
+    banner(e2.message, 'err');
+  }
+}
+
+function showPicker(list) {
+  $('custView').hidden = true;
+  $('pickView').hidden = false;
+  $('pickList').innerHTML = list
+    .map((c) => `<li><span>${c.first_name} ${c.last_name || ''}<br><span class="code">${c.code}</span></span>
+                 <button class="primary" data-id="${c.id}" data-code="${c.code}">Scegli</button></li>`)
+    .join('');
+  $('pickList').querySelectorAll('button').forEach((b) => {
+    b.onclick = async () => {
+      const r = await api('/api/cassa/lookup?q=' + b.dataset.code);
+      $('pickView').hidden = true;
+      showCustomer(r.customer, r.history);
+    };
+  });
+}
+$('pickCancel').onclick = () => { $('pickView').hidden = true; focusScan(); };
+
+function showCustomer(c, history) {
+  state.customer = c;
+  $('custView').hidden = !c;
+  if (!c) { focusScan(); return; }
+  $('pickView').hidden = true;
+  $('newView').hidden = true;
+  $('custName').textContent = c.first_name + ' ' + (c.last_name || '');
+  $('custCode').textContent = c.code;
+  $('custPoints').textContent = c.points_balance;
+  const missing = state.centsPerPoint - c.cents_carry;
+  $('custCarry').textContent = 'Mancano ' + fmt(missing) + ' EUR al prossimo punto';
+  if (history) drawHistory(history);
+  drawRewards();
+  setTimeout(() => $('amountInput').focus(), 30);
+}
+$('closeCust').onclick = (e) => { e.preventDefault(); showCustomer(null); };
+
+function drawHistory(rows) {
+  $('histTable').innerHTML = rows.length
+    ? rows.map((h) => {
+        const d = new Date(h.created_at * 1000).toLocaleDateString('it-IT',
+          { day: '2-digit', month: '2-digit' });
+        const label = h.kind === 'redeem' ? (h.reward_name || 'Premio') : 'Spesa ' + fmt(h.amount_cents) + ' EUR';
+        const delta = h.points_delta > 0 ? '+' + h.points_delta : h.points_delta;
+        const undo = (!h.voided_at && h.id === state.lastTx)
+          ? ` <button class="danger" style="padding:4px 10px;font-size:13px" data-void="${h.id}">Annulla</button>` : '';
+        return `<tr class="${h.voided_at ? 'voided' : ''}"><td>${d}</td>
+          <td>${label}${h.voided_at ? ' (annullato)' : ''} <span class="muted">${h.operator_name || ''}</span></td>
+          <td class="delta">${h.voided_at ? '—' : delta}${undo}</td></tr>`;
+      }).join('')
+    : '<tr><td class="muted">Nessun movimento</td></tr>';
+
+  $('histTable').querySelectorAll('[data-void]').forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm('Annullare questo movimento?')) return;
+      try {
+        const r = await api('/api/cassa/void', { body: { transactionId: Number(b.dataset.void) } });
+        state.lastTx = null;
+        banner('Movimento annullato');
+        await refreshCustomer(r.customer);
+      } catch (e) { banner(e.message, 'err'); }
+    };
+  });
+}
+
+async function refreshCustomer(c) {
+  const h = await api('/api/cassa/history?customerId=' + c.id);
+  showCustomer(c, h.history);
+}
+
+// ------------------------------------------------------------- assegnazione
+$('amountInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('awardForm').requestSubmit(); }
+});
+$('awardForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if (!state.customer) return;
+  const amount = $('amountInput').value.trim();
+  if (!amount) return;
+  $('awardBtn').disabled = true;
+  try {
+    const r = await api('/api/cassa/award', { body: { customerId: state.customer.id, amount } });
+    state.lastTx = r.transactionId;
+    $('amountInput').value = '';
+    banner(
+      r.pointsEarned > 0
+        ? `+${r.pointsEarned} ${r.pointsEarned === 1 ? 'punto' : 'punti'} a ${r.customer.first_name}. Totale: ${r.customer.points_balance}`
+        : `Nessun punto: mancano ${fmt(r.centsToNextPoint)} EUR al prossimo`,
+    );
+    await refreshCustomer(r.customer);
+  } catch (e2) {
+    banner(e2.message, 'err');
+    $('amountInput').select();
+  } finally {
+    $('awardBtn').disabled = false;
+  }
+};
+
+// ------------------------------------------------------------- premi
+async function loadRewards() {
+  try { state.rewards = (await api('/api/cassa/rewards')).rewards; } catch { state.rewards = []; }
+}
+function drawRewards() {
+  const c = state.customer;
+  const usable = state.rewards.filter((r) => r.points_cost <= (c ? c.points_balance : 0));
+  $('rewardsCard').hidden = usable.length === 0;
+  $('rewardsList').innerHTML = usable
+    .map((r) => `<li><span>${r.name} <span class="muted">${r.points_cost} punti</span></span>
+                 <button class="primary" data-reward="${r.id}">Riscuoti</button></li>`)
+    .join('');
+  $('rewardsList').querySelectorAll('[data-reward]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        const r = await api('/api/cassa/redeem',
+          { body: { customerId: state.customer.id, rewardId: Number(b.dataset.reward) } });
+        state.lastTx = r.transactionId;
+        banner('Premio consegnato: ' + r.reward.name);
+        await refreshCustomer(r.customer);
+      } catch (e) { banner(e.message, 'err'); }
+    };
+  });
+}
+
+// ------------------------------------------------------------- nuovo cliente
+$('newCustomerBtn').onclick = () => {
+  $('newView').hidden = false;
+  $('custView').hidden = true;
+  $('pickView').hidden = true;
+  setTimeout(() => $('nFirst').focus(), 30);
+};
+$('newCancel').onclick = () => { $('newView').hidden = true; focusScan(); };
+$('createBtn').onclick = async () => {
+  try {
+    const r = await api('/api/cassa/customers', {
+      body: {
+        firstName: $('nFirst').value, lastName: $('nLast').value,
+        phone: $('nPhone').value, consent: $('nConsent').checked,
+      },
+    });
+    ['nFirst', 'nLast', 'nPhone'].forEach((i) => ($(i).value = ''));
+    $('nConsent').checked = false;
+    $('newView').hidden = true;
+    banner('Tessera creata: ' + r.customer.code, 'ok', 8000);
+    showCustomer(r.customer, []);
+  } catch (e) { banner(e.message, 'err'); }
+};
+
+// Se l'operatore clicca a vuoto, il focus torna al campo scansione:
+// il lettore barcode non deve mai "scrivere nel vuoto".
+document.addEventListener('click', (e) => {
+  if (!state.me) return;
+  if (e.target.closest('input,select,button,a,label')) return;
+  focusScan();
+});
+
+boot().catch((e) => banner('Avvio fallito: ' + e.message, 'err', 0));
+</script>
+</body>
+</html>
