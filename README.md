@@ -11,6 +11,7 @@ Tre superfici, un solo dato condiviso:
 |---|---|---|
 | Pannello cassa | `/` | operatore, nel browser del PC cassa |
 | Pannello titolare | `/titolare.html` | titolare, con un PIN proprio |
+| Salva nel telefono | `/c/CODICE/wallet` | il cliente, da Android |
 | Pagina cliente | `/c/CODICE` | chiunque abbia il link, sola lettura |
 | API | `/api/*` | le due sopra |
 

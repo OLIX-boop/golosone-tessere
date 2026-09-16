@@ -49,3 +49,13 @@ footer{text-align:center;margin-top:28px;color:var(--muted)}
 footer p{margin:.2em 0}
 footer .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
              font-size:24px;letter-spacing:.22em;color:var(--ink)}
+
+/* Tessera nel telefono */
+.telefono .bottone{
+  display:inline-block;background:var(--accent);color:var(--card);
+  text-decoration:none;font-weight:600;padding:13px 20px;border-radius:10px;
+  margin:.4em 0 0;
+}
+.telefono ol.passi{margin:.6em 0 0;padding-left:1.3em;color:var(--ink);font-size:15px}
+.telefono ol.passi li{margin:.3em 0;padding-left:.2em}
+.telefono ol.passi b{font-weight:600}
