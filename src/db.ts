@@ -407,3 +407,195 @@ export async function listBatches(db: D1Database) {
     .all<{ batch: string; totale: number; vergini: number }>();
   return results;
 }
+
+// ------------------------------------------------------------- report
+
+/**
+ * Giorno civile di un istante, nel fuso del negozio.
+ *
+ * I Worker girano in UTC: raggruppare con date(created_at,'unixepoch') in SQL
+ * spezzerebbe la giornata alle 2 del mattino ora italiana, e d'estate alle 3.
+ * Il raggruppamento si fa qui con Intl, che l'ora legale la sa gestire.
+ */
+export function dayKey(tsSeconds: number, tz: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(tsSeconds * 1000));
+}
+
+/**
+ * Scarto in secondi fra il fuso del negozio e UTC in questo istante.
+ * Ricavato da Intl e non da una costante, cosi' l'ora legale si sistema da se'.
+ */
+export function tzOffsetSeconds(tz: string, at: Date = new Date()): number {
+  const s = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).format(at);
+  return Math.round((Date.parse(s.replace(' ', 'T') + 'Z') - at.getTime()) / 1000);
+}
+
+export type DayRow = { day: string; points: number; rewards: number; activations: number };
+
+/**
+ * Serie giornaliera degli ultimi N giorni.
+ *
+ * Si leggono le righe grezze e si raggruppa in JavaScript invece di far
+ * aggregare SQLite: per una pasticceria sono poche centinaia di movimenti al
+ * giorno, e in cambio il fuso orario resta corretto.
+ */
+export async function reportSeries(
+  db: D1Database,
+  args: { days: number; tz: string },
+): Promise<DayRow[]> {
+  const now = Math.floor(Date.now() / 1000);
+  // un giorno di margine: il confine civile non coincide con quello UTC
+  const since = now - (args.days + 1) * 86400;
+
+  const [tx, acts] = await Promise.all([
+    db
+      .prepare(
+        `SELECT kind, points_delta, created_at FROM transactions
+          WHERE created_at >= ? AND voided_at IS NULL`,
+      )
+      .bind(since)
+      .all<{ kind: string; points_delta: number; created_at: number }>(),
+    db
+      .prepare('SELECT activated_at FROM customers WHERE activated_at >= ?')
+      .bind(since)
+      .all<{ activated_at: number }>(),
+  ]);
+
+  const buckets = new Map<string, DayRow>();
+  // Si parte dai giorni vuoti: un giorno senza movimenti deve comparire come
+  // zero nel grafico, non sparire lasciando un buco nella sequenza.
+  for (let i = args.days - 1; i >= 0; i--) {
+    const day = dayKey(now - i * 86400, args.tz);
+    buckets.set(day, { day, points: 0, rewards: 0, activations: 0 });
+  }
+
+  for (const t of tx.results) {
+    const b = buckets.get(dayKey(t.created_at, args.tz));
+    if (!b) continue;
+    if (t.kind === 'redeem') b.rewards += 1;
+    else if (t.points_delta > 0) b.points += t.points_delta;
+  }
+  for (const a of acts.results) {
+    const b = buckets.get(dayKey(a.activated_at, args.tz));
+    if (b) b.activations += 1;
+  }
+  return [...buckets.values()];
+}
+
+export type Totals = {
+  points: number;
+  rewards: number;
+  activations: number;
+  activeCustomers: number;
+};
+
+export async function reportTotals(db: D1Database, sinceTs: number): Promise<Totals> {
+  const tx = await db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN points_delta > 0 THEN points_delta ELSE 0 END), 0) AS points,
+         COALESCE(SUM(CASE WHEN kind = 'redeem' THEN 1 ELSE 0 END), 0)             AS rewards,
+         COUNT(DISTINCT customer_id)                                               AS clienti
+       FROM transactions
+       WHERE created_at >= ? AND voided_at IS NULL`,
+    )
+    .bind(sinceTs)
+    .first<{ points: number; rewards: number; clienti: number }>();
+
+  const act = await db
+    .prepare('SELECT COUNT(*) AS n FROM customers WHERE activated_at >= ?')
+    .bind(sinceTs)
+    .first<{ n: number }>();
+
+  return {
+    points: tx?.points ?? 0,
+    rewards: tx?.rewards ?? 0,
+    activations: act?.n ?? 0,
+    activeCustomers: tx?.clienti ?? 0,
+  };
+}
+
+/** Quante tessere restano nella scatola, per accorgersene prima che finiscano. */
+export async function cardStock(db: D1Database) {
+  const row = await db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN activated_at IS NULL THEN 1 ELSE 0 END), 0) AS vergini,
+         COALESCE(SUM(CASE WHEN activated_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS consegnate
+       FROM customers`,
+    )
+    .first<{ vergini: number; consegnate: number }>();
+  return { blank: row?.vergini ?? 0, handed: row?.consegnate ?? 0 };
+}
+
+/** Clienti con piu' punti: serve al titolare per sapere chi sta per ritirare. */
+export async function topCustomers(db: D1Database, limit = 15) {
+  const { results } = await db
+    .prepare(
+      `SELECT ${CUSTOMER_COLS} FROM customers
+        WHERE active = 1 AND activated_at IS NOT NULL
+        ORDER BY points_balance DESC, points_lifetime DESC
+        LIMIT ?`,
+    )
+    .bind(limit)
+    .all<Customer>();
+  return results;
+}
+
+/** Tessera persa o clonata: si disattiva, non si cancella (il registro resta). */
+export async function setCustomerActive(db: D1Database, customerId: number, active: boolean) {
+  await db
+    .prepare('UPDATE customers SET active = ? WHERE id = ?')
+    .bind(active ? 1 : 0, customerId)
+    .run();
+  return (await findById(db, customerId))!;
+}
+
+// ------------------------------------------------------------- premi (CRUD)
+
+export async function upsertReward(
+  db: D1Database,
+  args: { id?: number; name: string; description?: string; pointsCost: number; active?: boolean; storeId?: number },
+) {
+  if (!args.name?.trim()) throw new Error('Serve il nome del premio');
+  if (!Number.isInteger(args.pointsCost) || args.pointsCost < 1) {
+    throw new Error('I punti del premio sono un intero positivo');
+  }
+  if (args.id) {
+    await db
+      .prepare('UPDATE rewards SET name = ?, description = ?, points_cost = ?, active = ? WHERE id = ?')
+      .bind(args.name.trim(), args.description?.trim() || null, args.pointsCost, args.active === false ? 0 : 1, args.id)
+      .run();
+    return args.id;
+  }
+  const row = await db
+    .prepare(
+      `INSERT INTO rewards (store_id, name, description, points_cost, active)
+       VALUES (?, ?, ?, ?, 1) RETURNING id`,
+    )
+    .bind(args.storeId ?? 1, args.name.trim(), args.description?.trim() || null, args.pointsCost)
+    .first<{ id: number }>();
+  return row!.id;
+}
+
+/** Tutti i premi, disattivati compresi: il titolare li deve poter riattivare. */
+export async function listAllRewards(db: D1Database, storeId = 1) {
+  const { results } = await db
+    .prepare(
+      `SELECT id, name, description, points_cost, active FROM rewards
+        WHERE store_id = ? ORDER BY active DESC, sort_order, points_cost`,
+    )
+    .bind(storeId)
+    .all<{ id: number; name: string; description: string | null; points_cost: number; active: number }>();
+  return results;
+}

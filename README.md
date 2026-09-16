@@ -10,6 +10,7 @@ Tre superfici, un solo dato condiviso:
 | Cosa | Dove | Chi la usa |
 |---|---|---|
 | Pannello cassa | `/` | operatore, nel browser del PC cassa |
+| Pannello titolare | `/titolare.html` | titolare, con un PIN proprio |
 | Pagina cliente | `/c/CODICE` | chiunque abbia il link, sola lettura |
 | API | `/api/*` | le due sopra |
 
@@ -51,6 +52,22 @@ prova a entrare, il blocco progressivo.
 Il blocco dopo 8 tentativi falliti riguarda **solo i nuovi accessi**: una cassa
 gia' sbloccata continua a lavorare, quindi nessuno puo' fermarti il negozio
 sbagliando PIN da fuori.
+
+### Il titolare ha un PIN suo
+
+Il PIN di cassa e' condiviso da chi sta al banco. Se il pannello titolare stesse
+dietro lo stesso PIN, chiunque potrebbe alzare la soglia del premio o leggere
+gli andamenti: quindi ne ha uno separato.
+
+Non introduce l'attrito che avevamo scartato per la cassa, perche' si usa di
+rado e mai in mezzo alla fila. La sessione dura 4 ore invece di 30 giorni: si
+entra, si guarda, si esce.
+
+Il primo PIN titolare si puo' impostare **solo da una cassa gia' sbloccata**,
+altrimenti il primo che trova l'indirizzo se lo prenderebbe.
+
+Cambiare il PIN di cassa dal pannello titolare **chiude tutte le sessioni di
+cassa aperte**: senza quello, cambiarlo non servirebbe a niente.
 
 ### Le tessere esistono prima dei clienti
 
@@ -169,8 +186,28 @@ definitivo**, altrimenti i QR puntano a un indirizzo che non esiste piu'.
 Sotto ogni QR c'e' il codice in chiaro: salva la giornata quando il lettore non
 legge, lo schermo e' crepato, o il cliente detta il codice al telefono.
 
-## Da fare
+## Pannello titolare
 
-- [ ] Pannello titolare: premio, PIN, report di giornata
+`/titolare.html`, PIN separato. Quattro schede:
+
+- **Andamento** - punti, clienti serviti e tessere consegnate di oggi, con il
+  grafico degli ultimi 7/14/30 giorni e una vista tabellare degli stessi dati.
+  I giorni si raggruppano nel fuso del negozio (`timezone`, default
+  `Europe/Rome`) e non in UTC: altrimenti la giornata si spezzerebbe alle 2 del
+  mattino, e d'estate alle 3.
+- **Premi** - nome e soglia, attiva/disattiva. Un premio non si cancella mai:
+  disattivarlo lo toglie dalla cassa ma tiene in piedi i movimenti che lo
+  citano.
+- **Clienti** - i 15 con piu' punti, ricerca per nome/telefono/codice, e il
+  blocco di una tessera persa o clonata. Bloccare non cancella: i punti restano
+  e il registro pure, ma la tessera non e' piu' utilizzabile.
+- **Impostazioni** - nome negozio, tetto punti, finestra di annullo, traguardo
+  visibile al cliente, e il cambio del PIN di cassa.
+
+Il POST delle impostazioni scrive **solo una lista chiusa di chiavi**: senza
+quel filtro basterebbe una richiesta con `access_pin_hash` per scavalcare il
+PIN.
+
+## Da fare
 - [ ] Pulsante "Aggiungi a Google Wallet" (pass dinamico, gratuito)
 - [ ] Istruzioni in-negozio per il pass Apple Wallet (iOS 27, statico)
