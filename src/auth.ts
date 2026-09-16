@@ -13,7 +13,11 @@
  * Il PIN sta in `settings` (hash + salt), quindi si cambia senza rideploy.
  */
 
-const PBKDF2_ITERATIONS = 150_000;
+// 100.000 e' il TETTO imposto da Cloudflare: oltre, crypto.subtle rifiuta con
+// "iteration counts above 100000 are not supported". Il runtime locale non
+// applica il limite, quindi alzarlo sembra funzionare finche' non si va in
+// produzione, dove ogni accesso diventa un errore 500. Non aumentare.
+const PBKDF2_ITERATIONS = 100_000;
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // la cassa non deve rifare il PIN ogni mattina
 export const SESSION_COOKIE = 'gt_sess';
 
