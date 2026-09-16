@@ -10,7 +10,7 @@ Tre superfici, un solo dato condiviso:
 | Cosa | Dove | Chi la usa |
 |---|---|---|
 | Pannello cassa | `/` | operatore, nel browser del PC cassa |
-| Pannello titolare | `/titolare.html` | titolare, con un PIN proprio |
+| Pannello titolare | `/titolare` | titolare, con un PIN proprio |
 | Salva nel telefono | `/c/CODICE/wallet` | il cliente, da Android |
 | Pagina cliente | `/c/CODICE` | chiunque abbia il link, sola lettura |
 | API | `/api/*` | le due sopra |
@@ -189,7 +189,7 @@ legge, lo schermo e' crepato, o il cliente detta il codice al telefono.
 
 ## Pannello titolare
 
-`/titolare.html`, PIN separato. Quattro schede:
+`/titolare`, PIN separato. Quattro schede:
 
 - **Andamento** - punti, clienti serviti e tessere consegnate di oggi, con il
   grafico degli ultimi 7/14/30 giorni e una vista tabellare degli stessi dati.
