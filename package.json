@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/**/*.test.ts\"",
     "db:seed": "wrangler d1 execute tessere --local --file=./migrations/0002_premio.sql",
-    "wallet:chiave": "node scripts/carica-chiave-wallet.mjs"
+    "wallet:chiave": "node scripts/carica-chiave-wallet.mjs",
+    "logo": "node scripts/genera-logo.mjs"
   },
   "dependencies": {
     "hono": "^4.6.14",
@@ -20,12 +21,13 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260916.1",
     "jsqr": "^1.4.0",
+    "sharp": "^0.35.4",
     "typescript": "^5.7.2",
     "wrangler": "^4.132.0"
   },
   "allowScripts": {
-    "sharp@0.33.5": true,
     "esbuild@0.28.1": true,
-    "workerd@1.20260915.1": true
+    "workerd@1.20260915.1": true,
+    "sharp@0.35.4": true
   }
 }

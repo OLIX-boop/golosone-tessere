@@ -129,6 +129,15 @@ function classBody(c: WalletConfig) {
     reviewStatus: 'UNDER_REVIEW',
     hexBackgroundColor: '#8c4a2f',
     countryCode: 'IT',
+    // Obbligatorio: senza, Google rifiuta la classe con
+    // "LoyaltyClass cannot be created without a program logo".
+    // L'immagine la serve il Worker stesso, cosi' non serve ospitarla altrove.
+    programLogo: {
+      sourceUri: { uri: `${c.origin}/logo.png` },
+      contentDescription: {
+        defaultValue: { language: 'it', value: `Logo ${c.storeName}` },
+      },
+    },
     // Il saldo va nel modulo punti dell'oggetto, non qui: qui ci sta solo
     // cio' che e' uguale per tutti i clienti.
   };
