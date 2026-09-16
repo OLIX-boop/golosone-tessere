@@ -5,8 +5,10 @@ export type Env = { DB: D1Database };
 export type Customer = {
   id: number;
   code: string;
-  first_name: string;
+  first_name: string | null;   // NULL = tessera vergine, mai consegnata
   last_name: string | null;
+  activated_at: number | null;
+  batch: string | null;
   phone: string | null;
   points_balance: number;
   points_lifetime: number;
@@ -45,8 +47,8 @@ export async function setSetting(db: D1Database, key: string, value: string) {
 
 // --------------------------------------------------------------- customers
 
-const CUSTOMER_COLS = `id, code, first_name, last_name, phone, points_balance,
-                       points_lifetime, active, created_at, last_seen_at`;
+const CUSTOMER_COLS = `id, code, first_name, last_name, activated_at, batch, phone,
+                       points_balance, points_lifetime, active, created_at, last_seen_at`;
 
 export function findByCode(db: D1Database, code: string) {
   return db
@@ -65,7 +67,7 @@ export function findById(db: D1Database, id: number) {
 export async function searchCustomers(db: D1Database, input: { phone?: string; name?: string }) {
   if (input.phone) {
     const { results } = await db
-      .prepare(`SELECT ${CUSTOMER_COLS} FROM customers WHERE phone_norm = ? AND active = 1 LIMIT 10`)
+      .prepare(`SELECT ${CUSTOMER_COLS} FROM customers WHERE phone_norm = ? AND active = 1 AND activated_at IS NOT NULL LIMIT 10`)
       .bind(normalizePhone(input.phone))
       .all<Customer>();
     return results;
@@ -75,7 +77,8 @@ export async function searchCustomers(db: D1Database, input: { phone?: string; n
     const { results } = await db
       .prepare(
         `SELECT ${CUSTOMER_COLS} FROM customers
-          WHERE active = 1 AND (first_name LIKE ?1 OR last_name LIKE ?1)
+          WHERE active = 1 AND activated_at IS NOT NULL
+            AND (first_name LIKE ?1 OR last_name LIKE ?1)
           ORDER BY last_seen_at DESC LIMIT 10`,
       )
       .bind(like)
@@ -140,6 +143,9 @@ export async function addPoints(
     const before = await findById(db, args.customerId);
     if (!before) throw new Error('Cliente non trovato');
     if (!before.active) throw new Error('Tessera disattivata');
+    // Una tessera ancora nella scatola non ha un intestatario: assegnarle punti
+    // significherebbe quasi sempre aver scansionato il cartoncino sbagliato.
+    if (!before.activated_at) throw new Error('Tessera non ancora attivata: registra prima il cliente');
 
     const [inserted, updated] = await db.batch([
       db
@@ -167,7 +173,7 @@ export async function addPoints(
       };
     }
   }
-  throw new Error('Tessera occupata da un altra sessione, riprova');
+  throw new Error("Tessera occupata da un'altra sessione, riprova");
 }
 
 export async function redeemReward(
@@ -217,7 +223,7 @@ export async function redeemReward(
       };
     }
   }
-  throw new Error('Tessera occupata da un altra sessione, riprova');
+  throw new Error("Tessera occupata da un'altra sessione, riprova");
 }
 
 /**
@@ -241,11 +247,11 @@ export async function voidTransaction(
       created_at: number;
     }>();
   if (!tx) throw new Error('Movimento non trovato');
-  if (tx.voided_at) throw new Error('Movimento gia annullato');
+  if (tx.voided_at) throw new Error('Movimento già annullato');
 
   const ageMinutes = (Math.floor(Date.now() / 1000) - tx.created_at) / 60;
   if (ageMinutes > args.windowMinutes) {
-    throw new Error(`Si puo annullare solo entro ${args.windowMinutes} minuti`);
+    throw new Error(`Si può annullare solo entro ${args.windowMinutes} minuti`);
   }
 
   const [voided] = await db.batch([
@@ -290,5 +296,114 @@ export async function listRewards(db: D1Database, storeId = 1) {
     )
     .bind(storeId)
     .all<{ id: number; name: string; description: string | null; points_cost: number }>();
+  return results;
+}
+
+// ------------------------------------------------------- lotti di tessere
+
+/**
+ * Crea un lotto di tessere vergini.
+ *
+ * Le tessere si stampano prima e stanno in una scatola alla cassa: non si puo'
+ * stampare un cartoncino mentre il cliente aspetta. Finche' non vengono
+ * consegnate non hanno intestatario.
+ *
+ * Il `batch` serve a ristampare un foglio che si e' rovinato senza generare
+ * codici nuovi e senza sprecare quelli gia' stampati.
+ */
+export async function createCardBatch(
+  db: D1Database,
+  args: { count: number; storeId?: number },
+): Promise<{ batch: string; cards: Customer[] }> {
+  const count = Math.floor(args.count);
+  if (!Number.isFinite(count) || count < 1) throw new Error('Quante tessere?');
+  if (count > 200) throw new Error('Massimo 200 tessere per volta');
+
+  const batch = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const storeId = args.storeId ?? 1;
+  const cards: Customer[] = [];
+
+  // Una INSERT per tessera invece di una sola multipla: cosi' una collisione
+  // di codice (rarissima) fa ritentare quella singola e non butta il lotto.
+  for (let i = 0; i < count; i++) {
+    let placed = false;
+    for (let attempt = 0; attempt < 5 && !placed; attempt++) {
+      try {
+        const row = await db
+          .prepare(
+            `INSERT INTO customers (code, store_id, batch) VALUES (?, ?, ?)
+             RETURNING ${CUSTOMER_COLS}`,
+          )
+          .bind(generateCode(), storeId, batch)
+          .first<Customer>();
+        if (row) {
+          cards.push(row);
+          placed = true;
+        }
+      } catch (err) {
+        if (!String(err).includes('UNIQUE')) throw err;
+      }
+    }
+    if (!placed) throw new Error('Impossibile generare un codice tessera libero');
+  }
+  return { batch, cards };
+}
+
+/** Consegna della tessera: da vergine a intestata. */
+export async function activateCard(
+  db: D1Database,
+  args: { customerId: number; firstName: string; lastName?: string; phone?: string; consent?: boolean },
+): Promise<Customer> {
+  const card = await findById(db, args.customerId);
+  if (!card) throw new Error('Tessera non trovata');
+  if (card.activated_at) throw new Error('Tessera già intestata');
+  if (!args.firstName?.trim()) throw new Error('Il nome è obbligatorio');
+
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `UPDATE customers
+          SET first_name = ?, last_name = ?, phone = ?, phone_norm = ?,
+              marketing_consent = ?, consent_at = ?, activated_at = ?, last_seen_at = ?
+        WHERE id = ? AND activated_at IS NULL`,
+    )
+    .bind(
+      args.firstName.trim(),
+      args.lastName?.trim() || null,
+      args.phone?.trim() || null,
+      args.phone ? normalizePhone(args.phone) : null,
+      args.consent ? 1 : 0,
+      args.consent ? now : null,
+      now,
+      now,
+      args.customerId,
+    )
+    .run();
+  return (await findById(db, args.customerId))!;
+}
+
+export async function listBatch(db: D1Database, batch: string) {
+  const { results } = await db
+    .prepare(
+      `SELECT ${CUSTOMER_COLS} FROM customers WHERE batch = ? ORDER BY id`,
+    )
+    .bind(batch)
+    .all<Customer>();
+  return results;
+}
+
+export async function listBatches(db: D1Database) {
+  const { results } = await db
+    .prepare(
+      `SELECT batch,
+              COUNT(*) AS totale,
+              SUM(CASE WHEN activated_at IS NULL THEN 1 ELSE 0 END) AS vergini
+         FROM customers
+        WHERE batch IS NOT NULL
+        GROUP BY batch
+        ORDER BY batch DESC
+        LIMIT 30`,
+    )
+    .all<{ batch: string; totale: number; vergini: number }>();
   return results;
 }

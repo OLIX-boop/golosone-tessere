@@ -40,13 +40,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 
+-- Una riga qui e' una TESSERA, che puo' esistere prima del cliente.
+-- Le tessere si stampano in lotti e stanno in una scatola alla cassa: non si
+-- puo' stampare un cartoncino mentre il cliente aspetta al banco. Finche' non
+-- viene consegnata, la tessera e' vergine (activated_at e first_name a NULL).
 CREATE TABLE IF NOT EXISTS customers (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   -- il codice stampato sulla tessera: alfabeto senza caratteri ambigui
   code           TEXT    NOT NULL UNIQUE,
   store_id       INTEGER NOT NULL REFERENCES stores(id),
-  first_name     TEXT    NOT NULL,
+  first_name     TEXT,   -- NULL finche' la tessera non e' stata consegnata
   last_name      TEXT,
+  activated_at   INTEGER,  -- NULL = tessera vergine, mai consegnata
+  batch          TEXT,     -- lotto di stampa, per ristampare un foglio perso
   -- phone_norm serve alla ricerca "ho dimenticato la tessera"
   phone          TEXT,
   phone_norm     TEXT,
@@ -63,6 +69,8 @@ CREATE TABLE IF NOT EXISTS customers (
 );
 CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone_norm);
 CREATE INDEX IF NOT EXISTS idx_customers_store ON customers(store_id, active);
+-- per elencare/ristampare un lotto e per contare le tessere ancora vergini
+CREATE INDEX IF NOT EXISTS idx_customers_batch ON customers(batch, code);
 
 CREATE TABLE IF NOT EXISTS rewards (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
