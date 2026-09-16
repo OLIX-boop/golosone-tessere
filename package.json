@@ -10,7 +10,8 @@
     "db:remote": "wrangler d1 execute tessere --remote --file=./migrations/0001_init.sql",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/**/*.test.ts\"",
-    "db:seed": "wrangler d1 execute tessere --local --file=./migrations/0002_premio.sql"
+    "db:seed": "wrangler d1 execute tessere --local --file=./migrations/0002_premio.sql",
+    "wallet:chiave": "node scripts/carica-chiave-wallet.mjs"
   },
   "dependencies": {
     "hono": "^4.6.14",
