@@ -286,9 +286,13 @@ app.get('/c/:code', async (c) => {
     return c.html(customerPage({ storeName, notFound: true }), 404);
   }
 
+  // Se il premio si ritira in negozio e basta, elencarlo qui puo' essere
+  // superfluo: e' una riga in settings, non una modifica al sito.
+  const showRewards = (settings.show_rewards_to_customer ?? '1') !== '0';
+
   const [history, rewards] = await Promise.all([
     customerHistory(c.env.DB, customer.id, 10),
-    listRewards(c.env.DB),
+    showRewards ? listRewards(c.env.DB) : Promise.resolve([]),
   ]);
   return c.html(
     customerPage({ storeName, customer, history: history as HistoryRow[], rewards, centsPerPoint }),
