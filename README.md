@@ -79,13 +79,34 @@ Si cambiano in `settings` senza rideploy:
 | `store_name` | `Pasticceria` | nome mostrato ovunque |
 | `void_window_min` | `15` | minuti entro cui la cassa puo' annullare |
 | `max_amount_cents` | `50000` | tetto anti-errore di battitura (500 EUR) |
+| `show_rewards_to_customer` | `1` | `0` lascia al cliente il solo saldo punti |
 
 ```bash
 npx wrangler d1 execute tessere --local \
   --command "UPDATE settings SET value='400' WHERE key='cents_per_point'"
 ```
 
-I premi si cambiano nella tabella `rewards`.
+## Premi
+
+Per ora ce n'e' uno solo, la **Tortina a 20 punti**, ma vive in tabella e non nel
+codice: cambiarne nome o soglia, o aggiungerne altri, non richiede un rideploy.
+
+```bash
+# cambiare la soglia
+npx wrangler d1 execute tessere --local   --command "UPDATE rewards SET points_cost=25 WHERE name='Tortina'"
+```
+
+20 punti valgono **100 EUR di spesa**: vale la pena confrontarlo col margine
+reale della tortina prima di stampare le tessere, perche' dopo la soglia si
+alza malvolentieri.
+
+La pagina cliente mostra il traguardo ("9 punti alla Tortina") perche' e' il
+motivo per cui un cliente riapre quella pagina. Se preferisci lasciare solo il
+saldo, visto che il premio si ritira comunque in negozio:
+
+```bash
+npx wrangler d1 execute tessere --local   --command "UPDATE settings SET value='0' WHERE key='show_rewards_to_customer'"
+```
 
 ## Da fare
 

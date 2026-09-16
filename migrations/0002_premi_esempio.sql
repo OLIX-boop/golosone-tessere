@@ -1,7 +1,10 @@
--- Catalogo premi di partenza. Sono solo un esempio ragionevole:
--- si cambiano dal pannello titolare senza toccare il codice.
+-- Catalogo premi.
+--
+-- Per ora ce n'e' uno solo: la tortina. Resta comunque una riga di tabella e
+-- non un valore scritto nel codice, cosi' si cambia nome e soglia con un
+-- comando, e aggiungerne altri non richiede toccare nulla.
+--
+-- Soglia: 20 punti = 100 EUR di spesa. Da ricontrollare col margine reale
+-- della tortina prima di stampare le tessere.
 INSERT INTO rewards (store_id, name, description, points_cost, sort_order) VALUES
-  (1, 'Caffe omaggio',        'Un caffe al banco',                     5,  1),
-  (1, 'Cornetto omaggio',     'Un cornetto a scelta',                 10,  2),
-  (1, 'Pasticcini 200g',      'Vassoietto di pasticceria mignon',     25,  3),
-  (1, 'Torta 6 persone',      'Torta a scelta dal banco',             60,  4);
+  (1, 'Tortina', 'Una tortina a scelta', 20, 1);
