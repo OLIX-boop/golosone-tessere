@@ -15,6 +15,14 @@ import { parsePoints, pointsLabel } from './points.ts';
 import { qrSvg } from './qr.ts';
 import {
   activateCard,
+  cardStock,
+  listAllRewards,
+  reportSeries,
+  reportTotals,
+  setCustomerActive,
+  topCustomers,
+  tzOffsetSeconds,
+  upsertReward,
   addPoints,
   createCardBatch,
   createCustomer,
@@ -42,15 +50,32 @@ const fail = (message: string) => ({ ok: false as const, error: message });
 
 // ============================================================ autenticazione
 
-async function hasSession(env: Env, token: string | undefined): Promise<boolean> {
+type Scope = 'cassa' | 'titolare';
+const ADMIN_COOKIE = 'gt_admin';
+
+async function hasSession(env: Env, token: string | undefined, scope: Scope = 'cassa'): Promise<boolean> {
   if (!token) return false;
   const row = await env.DB.prepare(
-    'SELECT 1 AS ok FROM sessions WHERE token_hash = ? AND expires_at > unixepoch()',
+    'SELECT 1 AS ok FROM sessions WHERE token_hash = ? AND scope = ? AND expires_at > unixepoch()',
   )
-    .bind(await sha256Hex(token))
+    .bind(await sha256Hex(token), scope)
     .first<{ ok: number }>();
   return !!row;
 }
+
+/**
+ * Il pannello titolare ha un PIN proprio.
+ *
+ * Con il solo PIN di cassa, chiunque stia al banco potrebbe cambiare la soglia
+ * del premio o leggere gli incassi. Questo si usa di rado e fuori dalla fila,
+ * quindi la separazione non costa attrito dove conta.
+ */
+const requireOwner = async (c: any, next: () => Promise<void>) => {
+  if (!(await hasSession(c.env, getCookie(c, ADMIN_COOKIE), 'titolare'))) {
+    return c.json(fail('Serve il PIN titolare'), 401);
+  }
+  await next();
+};
 
 /** Protegge tutto cio' che modifica i punti. La pagina cliente resta pubblica. */
 const requireSession = async (c: any, next: () => Promise<void>) => {
@@ -129,11 +154,9 @@ app.post('/api/login', async (c) => {
   const session = await createSessionToken();
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM sessions WHERE expires_at < unixepoch()'),
-    c.env.DB.prepare('INSERT INTO sessions (token_hash, label, expires_at) VALUES (?, ?, ?)').bind(
-      session.tokenHash,
-      c.req.header('user-agent')?.slice(0, 60) ?? null,
-      session.expiresAt,
-    ),
+    c.env.DB.prepare(
+      "INSERT INTO sessions (token_hash, label, scope, expires_at) VALUES (?, ?, 'cassa', ?)",
+    ).bind(session.tokenHash, c.req.header('user-agent')?.slice(0, 60) ?? null, session.expiresAt),
   ]);
 
   c.header('Set-Cookie', sessionCookie(session.token, isSecure(c.req.url)));
@@ -299,6 +322,212 @@ app.get('/api/cassa/history', async (c) => {
   const id = Number(c.req.query('customerId'));
   if (!id) return c.json(fail('Cliente mancante'), 400);
   return c.json({ ok: true, history: await customerHistory(c.env.DB, id, 20) });
+});
+
+// ================================================================ titolare
+
+const OWNER_TTL = 60 * 60 * 4; // quattro ore: si entra, si guarda, si esce
+
+app.get('/api/titolare/stato', async (c) => {
+  const settings = await getSettings(c.env.DB);
+  return c.json({
+    ok: true,
+    needsSetup: !settings.owner_pin_hash,
+    // si puo' impostare il PIN titolare solo da una cassa gia' sbloccata:
+    // altrimenti il primo passante che trova l'indirizzo se lo prende
+    canSetup: await hasSession(c.env, getCookie(c, SESSION_COOKIE), 'cassa'),
+    loggedIn: await hasSession(c.env, getCookie(c, ADMIN_COOKIE), 'titolare'),
+    storeName: settings.store_name ?? 'Pasticceria',
+  });
+});
+
+app.post('/api/titolare/setup', async (c) => {
+  const settings = await getSettings(c.env.DB);
+  if (settings.owner_pin_hash) return c.json(fail('PIN titolare già impostato'), 409);
+  if (!(await hasSession(c.env, getCookie(c, SESSION_COOKIE), 'cassa'))) {
+    return c.json(fail('Sblocca prima la cassa col PIN negozio'), 401);
+  }
+
+  const { pin } = await c.req.json<{ pin?: string }>();
+  if (!pin || !/^\d{4,10}$/.test(pin)) return c.json(fail('Il PIN deve avere da 4 a 10 cifre'), 400);
+
+  const salt = randomHex(16);
+  await setSetting(c.env.DB, 'owner_pin_salt', salt);
+  await setSetting(c.env.DB, 'owner_pin_hash', await hashPin(pin, salt));
+  return c.json({ ok: true });
+});
+
+app.post('/api/titolare/login', async (c) => {
+  const settings = await getSettings(c.env.DB);
+  const now = Math.floor(Date.now() / 1000);
+
+  const lockUntil = Number(settings.owner_lock_until ?? 0);
+  if (lockUntil > now) {
+    return c.json(fail(`Troppi tentativi. Riprova tra ${Math.ceil((lockUntil - now) / 60)} minuti`), 429);
+  }
+
+  const { pin } = await c.req.json<{ pin?: string }>();
+  const ok =
+    !!pin &&
+    !!settings.owner_pin_hash &&
+    (await verifyPin(pin, settings.owner_pin_salt ?? '', settings.owner_pin_hash));
+
+  if (!ok) {
+    const fails = Number(settings.owner_fail_count ?? 0) + 1;
+    await setSetting(c.env.DB, 'owner_fail_count', String(fails));
+    if (fails >= MAX_FAILS) {
+      await setSetting(c.env.DB, 'owner_lock_until', String(now + LOCK_MINUTES * 60));
+      await setSetting(c.env.DB, 'owner_fail_count', '0');
+      return c.json(fail(`Troppi tentativi. Bloccato per ${LOCK_MINUTES} minuti`), 429);
+    }
+    return c.json(fail('PIN errato'), 401);
+  }
+
+  await setSetting(c.env.DB, 'owner_fail_count', '0');
+  const token = randomHex(32);
+  await c.env.DB.prepare(
+    "INSERT INTO sessions (token_hash, label, scope, expires_at) VALUES (?, 'titolare', 'titolare', ?)",
+  )
+    .bind(await sha256Hex(token), now + OWNER_TTL)
+    .run();
+
+  const secure = isSecure(c.req.url);
+  c.header(
+    'Set-Cookie',
+    `${ADMIN_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${OWNER_TTL}${secure ? '; Secure' : ''}`,
+  );
+  return c.json({ ok: true });
+});
+
+app.post('/api/titolare/logout', async (c) => {
+  const token = getCookie(c, ADMIN_COOKIE);
+  if (token) {
+    await c.env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(await sha256Hex(token)).run();
+  }
+  const secure = isSecure(c.req.url);
+  c.header('Set-Cookie', `${ADMIN_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`);
+  return c.json({ ok: true });
+});
+
+app.use('/api/titolare/report', requireOwner);
+app.use('/api/titolare/premi', requireOwner);
+app.use('/api/titolare/clienti', requireOwner);
+app.use('/api/titolare/clienti/*', requireOwner);
+app.use('/api/titolare/impostazioni', requireOwner);
+app.use('/api/titolare/pin-negozio', requireOwner);
+
+app.get('/api/titolare/report', async (c) => {
+  const settings = await getSettings(c.env.DB);
+  const tz = settings.timezone ?? 'Europe/Rome';
+  const days = Math.min(90, Math.max(7, Number(c.req.query('days') ?? 14)));
+  const now = Math.floor(Date.now() / 1000);
+
+  // "Oggi" e' il giorno civile del negozio, non le ultime 24 ore.
+  const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+  const startOfToday = Math.floor(new Date(`${todayKey}T00:00:00Z`).getTime() / 1000) - tzOffsetSeconds(tz);
+
+  const [serie, oggi, settimana, mese, scorta] = await Promise.all([
+    reportSeries(c.env.DB, { days, tz }),
+    reportTotals(c.env.DB, startOfToday),
+    reportTotals(c.env.DB, now - 7 * 86400),
+    reportTotals(c.env.DB, now - 30 * 86400),
+    cardStock(c.env.DB),
+  ]);
+
+  return c.json({ ok: true, serie, oggi, settimana, mese, scorta, tz });
+});
+
+app.get('/api/titolare/premi', async (c) =>
+  c.json({ ok: true, premi: await listAllRewards(c.env.DB, STORE_ID) }),
+);
+
+app.post('/api/titolare/premi', async (c) => {
+  const b = await c.req.json<{
+    id?: number; name?: string; description?: string; pointsCost?: number; active?: boolean;
+  }>();
+  try {
+    const id = await upsertReward(c.env.DB, {
+      id: b.id,
+      name: b.name ?? '',
+      description: b.description,
+      pointsCost: Number(b.pointsCost),
+      active: b.active,
+      storeId: STORE_ID,
+    });
+    return c.json({ ok: true, id, premi: await listAllRewards(c.env.DB, STORE_ID) });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
+});
+
+app.get('/api/titolare/clienti', async (c) => {
+  const q = (c.req.query('q') ?? '').trim();
+  if (!q) return c.json({ ok: true, clienti: await topCustomers(c.env.DB, 15), modo: 'top' });
+
+  const parsed = parseInput(q);
+  const clienti =
+    parsed.type === 'code'
+      ? [await findByCode(c.env.DB, normalizeCode(parsed.value))].filter(Boolean)
+      : await searchCustomers(c.env.DB, parsed.type === 'phone' ? { phone: parsed.value } : { name: q });
+  return c.json({ ok: true, clienti, modo: 'ricerca' });
+});
+
+app.post('/api/titolare/clienti/attiva', async (c) => {
+  const { customerId, active } = await c.req.json<{ customerId?: number; active?: boolean }>();
+  if (!customerId) return c.json(fail('Cliente mancante'), 400);
+  const customer = await setCustomerActive(c.env.DB, customerId, active !== false);
+  return c.json({ ok: true, customer });
+});
+
+app.get('/api/titolare/impostazioni', async (c) => {
+  const s = await getSettings(c.env.DB);
+  // gli hash dei PIN non escono mai dal server
+  const pubbliche: Record<string, string> = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (!k.includes('pin_hash') && !k.includes('pin_salt')) pubbliche[k] = v;
+  }
+  return c.json({ ok: true, impostazioni: pubbliche });
+});
+
+const MODIFICABILI = new Set([
+  'store_name',
+  'max_points_per_tx',
+  'void_window_min',
+  'show_rewards_to_customer',
+  'timezone',
+]);
+
+app.post('/api/titolare/impostazioni', async (c) => {
+  const body = await c.req.json<Record<string, string>>();
+  const scritte: string[] = [];
+  for (const [k, v] of Object.entries(body)) {
+    // lista chiusa: un POST non deve poter scrivere pin_lock_until o gli hash
+    if (!MODIFICABILI.has(k)) continue;
+    if (k === 'max_points_per_tx' || k === 'void_window_min') {
+      const n = Number.parseInt(String(v), 10);
+      if (!Number.isFinite(n) || n < 1) return c.json(fail(`Valore non valido per ${k}`), 400);
+    }
+    if (k === 'store_name' && !String(v).trim()) {
+      return c.json(fail('Il nome del negozio non può essere vuoto'), 400);
+    }
+    await setSetting(c.env.DB, k, String(v).trim());
+    scritte.push(k);
+  }
+  return c.json({ ok: true, scritte });
+});
+
+/** Cambio del PIN di cassa: tutte le casse dovranno rientrare. */
+app.post('/api/titolare/pin-negozio', async (c) => {
+  const { pin } = await c.req.json<{ pin?: string }>();
+  if (!pin || !/^\d{4,10}$/.test(pin)) return c.json(fail('Il PIN deve avere da 4 a 10 cifre'), 400);
+
+  const salt = randomHex(16);
+  await setSetting(c.env.DB, 'access_pin_salt', salt);
+  await setSetting(c.env.DB, 'access_pin_hash', await hashPin(pin, salt));
+  // le sessioni cassa aperte col vecchio PIN vanno chiuse, altrimenti
+  // cambiarlo non servirebbe a niente
+  await c.env.DB.prepare("DELETE FROM sessions WHERE scope = 'cassa'").run();
+  return c.json({ ok: true });
 });
 
 // ============================================================ stampa tessere

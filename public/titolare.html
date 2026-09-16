@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Titolare - Tessere punti</title>
+<style>
+  :root{
+    --bg:#f4f1ec; --card:#fff; --ink:#2b2420; --ink2:#6b6058; --muted:#8a7f76;
+    --line:#e5ded5; --accent:#8c4a2f; --accent-ink:#fff;
+    --ok:#2f7a4d; --ok-bg:#e8f5ed; --err:#b3261e; --err-bg:#fdeceb;
+    /* Colore dei dati, separato da quello del marchio: il marrone della
+       pasticceria ha croma troppo bassa e come barra leggerebbe grigio.
+       Questo arancio e' validato su fondo chiaro E scuro. */
+    --dato:#d95926;
+    --griglia:#ece5dc;
+    --radius:14px;
+  }
+  /* Il tema scuro e' scelto, non ribaltato: stesso arancio, verificato
+     anche contro il fondo scuro. */
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#191513; --card:#241f1c; --ink:#f2ece6; --ink2:#c2b5a9; --muted:#a6988c;
+           --line:#38302b; --accent:#d98b63; --accent-ink:#2b2420;
+           --ok:#7bc79a; --ok-bg:#1e3328; --err:#f2b8b5; --err-bg:#3a1f1d;
+           --dato:#d95926; --griglia:#2f2825; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 60px}
+  h1{margin:0;font-size:22px}
+  h2{margin:0 0 .5em;font-size:17px}
+  button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:11px 16px}
+  .primary{background:var(--accent);color:var(--accent-ink);font-weight:600}
+  .primary:disabled{opacity:.45;cursor:not-allowed}
+  .ghost{background:transparent;color:var(--ink2);border:1px solid var(--line)}
+  .danger{background:transparent;color:var(--err);border:1px solid var(--err)}
+  input,select{font:inherit;padding:10px 12px;border:1px solid var(--line);
+               border-radius:10px;background:var(--card);color:var(--ink);width:100%}
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+        padding:20px;margin-bottom:16px}
+  .hint{color:var(--muted);font-size:14px;margin:.3em 0 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .grow{flex:1 1 180px}
+  [hidden]{display:none!important}
+  .topbar{display:flex;justify-content:space-between;align-items:center;
+          gap:12px;margin-bottom:18px;flex-wrap:wrap}
+  .banner{padding:13px 16px;border-radius:10px;margin-bottom:16px;font-weight:600}
+  .banner.ok{background:var(--ok-bg);color:var(--ok)}
+  .banner.err{background:var(--err-bg);color:var(--err)}
+
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+  .tabs button{background:transparent;color:var(--ink2);border:1px solid var(--line)}
+  .tabs button[aria-selected="true"]{background:var(--accent);color:var(--accent-ink);
+                                     border-color:var(--accent);font-weight:600}
+
+  /* Riquadri sintesi: il numero e' il messaggio, l'etichetta lo qualifica. */
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .tile b{display:block;font-size:30px;line-height:1.1;font-variant-numeric:tabular-nums}
+  .tile span{color:var(--muted);font-size:13px}
+
+  /* Grafico: assi e griglia recessivi, il dato in primo piano. */
+  .chartwrap{position:relative;margin-top:6px}
+  svg.chart{display:block;width:100%;height:190px;overflow:visible}
+  .chart .griglia{stroke:var(--griglia);stroke-width:1}
+  .chart .asse{stroke:var(--line);stroke-width:1}
+  .chart .barra{fill:var(--dato)}
+  .chart .colpo{fill:transparent;cursor:pointer}
+  .chart text{fill:var(--muted);font-size:10px}
+  .tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--card);
+       padding:8px 11px;border-radius:8px;font-size:13px;line-height:1.45;
+       white-space:nowrap;transform:translate(-50%,-100%);z-index:5;opacity:0;
+       transition:opacity .12s}
+  .tip.on{opacity:1}
+  .tip b{display:block;font-size:12px;opacity:.75;font-weight:600}
+
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;color:var(--muted);font-weight:600;font-size:13px;
+     padding:6px 0;border-bottom:1px solid var(--line)}
+  td{padding:9px 0;border-bottom:1px solid var(--line)}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.spenta td{opacity:.45}
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.1em;
+        font-size:13px;color:var(--muted)}
+
+  .pinpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:260px;margin-top:14px}
+  .pinpad button{background:var(--card);border:1px solid var(--line);font-size:22px;padding:16px}
+  .pinpad button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  .pindots{font-size:30px;letter-spacing:.35em;min-height:40px;color:var(--accent)}
+  .premio{display:grid;grid-template-columns:1fr 110px auto auto;gap:10px;align-items:center;
+          padding:10px 0;border-bottom:1px solid var(--line)}
+  @media (max-width:560px){ .premio{grid-template-columns:1fr 1fr;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <h1 id="shopName">Titolare</h1>
+    <div class="row">
+      <a class="ghost" href="/" style="padding:11px 16px;border-radius:10px;text-decoration:none">Cassa</a>
+      <button class="ghost" id="logoutBtn" hidden>Esci</button>
+    </div>
+  </div>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <!-- ===== Primo avvio ===== -->
+  <section id="setupView" class="card" hidden>
+    <h2>PIN titolare</h2>
+    <p class="hint">Un PIN separato da quello di cassa: chi sta al banco non deve poter
+       cambiare la soglia del premio o leggere gli andamenti.</p>
+    <div class="row" style="margin-top:14px">
+      <div class="grow"><input id="setupPin" placeholder="PIN titolare (4-10 cifre)" inputmode="numeric" autocomplete="off"></div>
+      <button class="primary" id="setupBtn">Imposta</button>
+    </div>
+    <p class="hint" id="setupNota"></p>
+  </section>
+
+  <!-- ===== Accesso ===== -->
+  <section id="loginView" class="card" hidden>
+    <h2>PIN titolare</h2>
+    <div class="pindots" id="pinDots"></div>
+    <div class="pinpad">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <button class="ghost" data-k="del">&larr;</button>
+      <button data-k="0">0</button>
+      <button class="primary" data-k="ok">OK</button>
+    </div>
+  </section>
+
+  <!-- ===== Pannello ===== -->
+  <section id="panel" hidden>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="report" aria-selected="true">Andamento</button>
+      <button role="tab" data-tab="premi" aria-selected="false">Premi</button>
+      <button role="tab" data-tab="clienti" aria-selected="false">Clienti</button>
+      <button role="tab" data-tab="impostazioni" aria-selected="false">Impostazioni</button>
+    </div>
+
+    <!-- --- Andamento --- -->
+    <div id="tab-report">
+      <div class="tiles" id="tiles"></div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <h2 id="chartTitle">Punti assegnati per giorno</h2>
+          <div class="row">
+            <select id="giorni" style="width:auto">
+              <option value="7">7 giorni</option>
+              <option value="14" selected>14 giorni</option>
+              <option value="30">30 giorni</option>
+            </select>
+            <button class="ghost" id="tabellaBtn" aria-pressed="false">Tabella</button>
+          </div>
+        </div>
+
+        <div class="chartwrap" id="chartwrap">
+          <svg class="chart" id="chart" role="img" aria-labelledby="chartTitle"></svg>
+          <div class="tip" id="tip"></div>
+        </div>
+
+        <div id="tabellaDati" hidden style="margin-top:14px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Scorta tessere</h2>
+        <p id="scorta" class="hint"></p>
+      </div>
+    </div>
+
+    <!-- --- Premi --- -->
+    <div id="tab-premi" hidden>
+      <div class="card">
+        <h2>Premi</h2>
+        <p class="hint">La soglia si alza molto malvolentieri dopo che i clienti ci hanno
+           fatto l'abitudine: meglio ragionarci prima di stampare le tessere.</p>
+        <div id="premiList" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h2>Aggiungi premio</h2>
+        <div class="row">
+          <div class="grow"><input id="npName" placeholder="Nome, es. Tortina"></div>
+          <div style="flex:0 0 130px"><input id="npCost" inputmode="numeric" placeholder="Punti"></div>
+          <button class="primary" id="npBtn">Aggiungi</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- --- Clienti --- -->
+    <div id="tab-clienti" hidden>
+      <div class="card">
+        <h2>Clienti</h2>
+        <div class="row">
+          <div class="grow"><input id="cercaCliente" placeholder="Nome, telefono o codice tessera"></div>
+          <button class="ghost" id="cercaBtn">Cerca</button>
+        </div>
+        <p class="hint" id="clientiNota"></p>
+        <div style="margin-top:12px;overflow-x:auto"><table id="clientiTab"></table></div>
+      </div>
+    </div>
+
+    <!-- --- Impostazioni --- -->
+    <div id="tab-impostazioni" hidden>
+      <div class="card">
+        <h2>Impostazioni</h2>
+        <div class="row" style="margin-top:8px">
+          <div class="grow">
+            <label class="hint" for="setStoreName">Nome del negozio</label>
+            <input id="setStoreName">
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div class="grow">
+            <label class="hint" for="setMaxPoints">Massimo punti per movimento</label>
+            <input id="setMaxPoints" inputmode="numeric">
+          </div>
+          <div class="grow">
+            <label class="hint" for="setVoid">Minuti per annullare</label>
+            <input id="setVoid" inputmode="numeric">
+          </div>
+        </div>
+        <label class="row" style="margin-top:14px;gap:8px">
+          <input type="checkbox" id="setShowRewards" style="width:auto">
+          <span class="hint" style="margin:0">Mostra al cliente quanto manca al premio</span>
+        </label>
+        <div class="row" style="margin-top:16px"><button class="primary" id="salvaImp">Salva</button></div>
+      </div>
+
+      <div class="card">
+        <h2>PIN di cassa</h2>
+        <p class="hint">Cambiandolo, tutte le casse aperte vengono disconnesse e dovranno
+           rientrare col nuovo PIN.</p>
+        <div class="row" style="margin-top:14px">
+          <div class="grow"><input id="nuovoPin" placeholder="Nuovo PIN (4-10 cifre)" inputmode="numeric" autocomplete="off"></div>
+          <button class="danger" id="cambiaPinBtn">Cambia PIN cassa</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const stato = { report: null, premi: [] };
+
+let bannerTimer;
+function banner(msg, kind = 'ok', ms = 5000) {
+  clearTimeout(bannerTimer);
+  $('banner').textContent = msg;
+  $('banner').className = 'banner ' + kind;
+  $('banner').hidden = false;
+  if (ms) bannerTimer = setTimeout(() => { $('banner').hidden = true; }, ms);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    method: opts.body ? (opts.method || 'POST') : (opts.method || 'GET'),
+  });
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Errore di rete');
+  return data;
+}
+
+// ------------------------------------------------------------- avvio
+async function boot() {
+  const s = await api('/api/titolare/stato');
+  $('shopName').textContent = s.storeName;
+  document.title = 'Titolare - ' + s.storeName;
+
+  $('setupView').hidden = !(s.needsSetup);
+  $('loginView').hidden = s.needsSetup || s.loggedIn;
+  $('panel').hidden = s.needsSetup || !s.loggedIn;
+  $('logoutBtn').hidden = !s.loggedIn;
+
+  if (s.needsSetup) {
+    $('setupBtn').disabled = !s.canSetup;
+    $('setupNota').textContent = s.canSetup
+      ? 'Puoi impostarlo perché questa cassa è già sbloccata.'
+      : 'Sblocca prima la cassa col PIN negozio, poi torna qui.';
+  }
+  if (s.loggedIn) caricaTutto();
+}
+
+async function caricaTutto() {
+  await Promise.all([caricaReport(), caricaPremi(), caricaClienti(), caricaImpostazioni()]);
+}
+
+// ------------------------------------------------------------- setup/login
+$('setupBtn').onclick = async () => {
+  try {
+    await api('/api/titolare/setup', { body: { pin: $('setupPin').value } });
+    $('setupPin').value = '';
+    banner('PIN titolare impostato');
+    boot();
+  } catch (e) { banner(e.message, 'err'); }
+};
+
+let pin = '';
+const drawPin = () => { $('pinDots').textContent = '•'.repeat(pin.length); };
+document.querySelectorAll('.pinpad button').forEach((b) => {
+  b.onclick = () => {
+    const k = b.dataset.k;
+    if (k === 'del') pin = pin.slice(0, -1);
+    else if (k === 'ok') return entra();
+    else if (pin.length < 10) pin += k;
+    drawPin();
+  };
+});
+async function entra() {
+  try {
+    await api('/api/titolare/login', { body: { pin } });
+    pin = ''; drawPin();
+    boot();
+  } catch (e) { pin = ''; drawPin(); banner(e.message, 'err', 8000); }
+}
+$('logoutBtn').onclick = async () => {
+  await api('/api/titolare/logout', { method: 'POST', body: {} });
+  boot();
+};
+
+// ------------------------------------------------------------- schede
+document.querySelectorAll('.tabs button').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach((x) =>
+      x.setAttribute('aria-selected', String(x === b)));
+    ['report', 'premi', 'clienti', 'impostazioni'].forEach((t) => {
+      $('tab-' + t).hidden = t !== b.dataset.tab;
+    });
+    if (b.dataset.tab === 'report' && stato.report) disegnaGrafico();
+  };
+});
+
+// ------------------------------------------------------------- andamento
+$('giorni').onchange = caricaReport;
+
+async function caricaReport() {
+  const giorni = $('giorni').value;
+  stato.report = await api('/api/titolare/report?days=' + giorni);
+  const r = stato.report;
+
+  const tile = (n, etichetta) => `<div class="tile"><b>${n}</b><span>${etichetta}</span></div>`;
+  $('tiles').innerHTML =
+    tile(r.oggi.points, 'punti assegnati oggi') +
+    tile(r.oggi.activeCustomers, 'clienti serviti oggi') +
+    tile(r.oggi.activations, 'tessere consegnate oggi') +
+    tile(r.settimana.points, 'punti negli ultimi 7 giorni') +
+    tile(r.mese.rewards, 'premi ritirati in 30 giorni');
+
+  $('scorta').textContent =
+    `${r.scorta.blank} tessere ancora da consegnare, ${r.scorta.handed} già in mano ai clienti.` +
+    (r.scorta.blank < 10 ? ' Conviene stamparne altre dal pannello cassa.' : '');
+
+  disegnaGrafico();
+  disegnaTabella();
+}
+
+/**
+ * Barre: una sola serie, quindi nessuna legenda (il titolo la nomina).
+ * Nessun numero su ogni barra - solo il massimo etichettato - e il resto
+ * arriva dal passaggio del mouse: una cifra per colonna diventa rumore.
+ */
+function disegnaGrafico() {
+  const serie = stato.report.serie;
+  const svg = $('chart');
+  const W = svg.clientWidth || 760;
+  const H = 190;
+  const padL = 30, padR = 8, padT = 16, padB = 26;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const max = Math.max(1, ...serie.map((d) => d.points));
+
+  const passo = innerW / serie.length;
+  const gap = 2;                                   // distacco fra barre adiacenti
+  const larg = Math.max(3, Math.min(34, passo - gap));
+
+  const y = (v) => padT + innerH - (v / max) * innerH;
+
+  // estremita' arrotondata solo in cima: la barra resta ancorata alla base
+  const barra = (x, yv, w, h, r) => {
+    r = Math.min(r, w / 2, h);
+    return `M${x} ${yv + h} L${x} ${yv + r} Q${x} ${yv} ${x + r} ${yv}` +
+           ` L${x + w - r} ${yv} Q${x + w} ${yv} ${x + w} ${yv + r} L${x + w} ${yv + h} Z`;
+  };
+
+  let out = '';
+  // griglia recessiva: solo il massimo, non una riga ogni tot
+  out += `<line class="griglia" x1="${padL}" y1="${y(max)}" x2="${W - padR}" y2="${y(max)}"/>`;
+  out += `<text x="${padL - 6}" y="${y(max) + 4}" text-anchor="end">${max}</text>`;
+  out += `<line class="asse" x1="${padL}" y1="${padT + innerH}" x2="${W - padR}" y2="${padT + innerH}"/>`;
+
+  serie.forEach((d, i) => {
+    const x = padL + i * passo + (passo - larg) / 2;
+    const h = (d.points / max) * innerH;
+    if (d.points > 0) out += `<path class="barra" d="${barra(x, y(d.points), larg, h, 4)}"/>`;
+    // bersaglio piu' largo della barra, cosi' anche i giorni a zero rispondono
+    out += `<rect class="colpo" x="${padL + i * passo}" y="${padT}" width="${passo}" height="${innerH}" data-i="${i}"/>`;
+  });
+
+  // etichette solo agli estremi e a meta': una data per barra non si legge
+  const etichetta = (i) => {
+    const [, m, g] = serie[i].day.split('-');
+    return `${g}/${m}`;
+  };
+  [0, Math.floor(serie.length / 2), serie.length - 1].forEach((i) => {
+    const x = padL + i * passo + passo / 2;
+    out += `<text x="${x}" y="${H - 8}" text-anchor="middle">${etichetta(i)}</text>`;
+  });
+
+  svg.innerHTML = out;
+
+  svg.querySelectorAll('.colpo').forEach((r) => {
+    r.addEventListener('mouseenter', () => mostraTip(Number(r.dataset.i), r));
+    r.addEventListener('mouseleave', () => $('tip').classList.remove('on'));
+  });
+}
+
+function mostraTip(i, rect) {
+  const d = stato.report.serie[i];
+  const [a, m, g] = d.day.split('-');
+  const tip = $('tip');
+  tip.innerHTML =
+    `<b>${g}/${m}/${a.slice(2)}</b>` +
+    `${d.points} ${d.points === 1 ? 'punto' : 'punti'}` +
+    (d.rewards ? `<br>${d.rewards} ${d.rewards === 1 ? 'premio ritirato' : 'premi ritirati'}` : '') +
+    (d.activations ? `<br>${d.activations} ${d.activations === 1 ? 'tessera consegnata' : 'tessere consegnate'}` : '');
+  const box = rect.getBoundingClientRect();
+  const wrap = $('chartwrap').getBoundingClientRect();
+  tip.style.left = (box.left - wrap.left + box.width / 2) + 'px';
+  tip.style.top = (box.top - wrap.top - 6) + 'px';
+  tip.classList.add('on');
+}
+
+/** Vista tabellare: gli stessi dati senza dover leggere un grafico. */
+function disegnaTabella() {
+  const righe = stato.report.serie
+    .slice().reverse()
+    .map((d) => {
+      const [a, m, g] = d.day.split('-');
+      return `<tr><td>${g}/${m}/${a.slice(2)}</td><td class="num">${d.points}</td>
+              <td class="num">${d.rewards}</td><td class="num">${d.activations}</td></tr>`;
+    }).join('');
+  $('tabellaDati').innerHTML =
+    `<table><thead><tr><th>Giorno</th><th class="num">Punti</th>
+     <th class="num">Premi</th><th class="num">Tessere</th></tr></thead><tbody>${righe}</tbody></table>`;
+}
+
+$('tabellaBtn').onclick = () => {
+  const aperta = $('tabellaDati').hidden;
+  $('tabellaDati').hidden = !aperta;
+  $('tabellaBtn').setAttribute('aria-pressed', String(aperta));
+};
+
+window.addEventListener('resize', () => { if (stato.report) disegnaGrafico(); });
+
+// ------------------------------------------------------------- premi
+async function caricaPremi() {
+  const { premi } = await api('/api/titolare/premi');
+  stato.premi = premi;
+  $('premiList').innerHTML = premi.length
+    ? premi.map((p) => `<div class="premio" data-id="${p.id}">
+        <input class="pName" value="${p.name.replace(/"/g, '&quot;')}">
+        <input class="pCost" inputmode="numeric" value="${p.points_cost}">
+        <button class="primary pSalva">Salva</button>
+        <button class="ghost pAttiva">${p.active ? 'Disattiva' : 'Riattiva'}</button>
+      </div>`).join('')
+    : '<p class="hint">Nessun premio. Aggiungine uno qui sotto.</p>';
+
+  $('premiList').querySelectorAll('.premio').forEach((riga) => {
+    const id = Number(riga.dataset.id);
+    const p = premi.find((x) => x.id === id);
+    riga.querySelector('.pSalva').onclick = () => salvaPremio({
+      id, name: riga.querySelector('.pName').value,
+      pointsCost: Number(riga.querySelector('.pCost').value), active: !!p.active,
+    });
+    riga.querySelector('.pAttiva').onclick = () => salvaPremio({
+      id, name: riga.querySelector('.pName').value,
+      pointsCost: Number(riga.querySelector('.pCost').value), active: !p.active,
+    });
+  });
+}
+
+async function salvaPremio(body) {
+  try {
+    await api('/api/titolare/premi', { body });
+    banner('Premio aggiornato');
+    caricaPremi();
+  } catch (e) { banner(e.message, 'err'); }
+}
+
+$('npBtn').onclick = async () => {
+  try {
+    await api('/api/titolare/premi', {
+      body: { name: $('npName').value, pointsCost: Number($('npCost').value) },
+    });
+    $('npName').value = ''; $('npCost').value = '';
+    banner('Premio aggiunto');
+    caricaPremi();
+  } catch (e) { banner(e.message, 'err'); }
+};
+
+// ------------------------------------------------------------- clienti
+$('cercaBtn').onclick = () => caricaClienti($('cercaCliente').value);
+$('cercaCliente').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); caricaClienti($('cercaCliente').value); }
+});
+
+async function caricaClienti(q = '') {
+  let d;
+  try { d = await api('/api/titolare/clienti?q=' + encodeURIComponent(q)); }
+  catch (e) { return banner(e.message, 'err'); }
+
+  $('clientiNota').textContent = d.modo === 'top'
+    ? 'I 15 clienti con più punti in questo momento.'
+    : `${d.clienti.length} risultati.`;
+
+  $('clientiTab').innerHTML = d.clienti.length
+    ? `<thead><tr><th>Cliente</th><th>Tessera</th><th class="num">Punti</th>
+       <th class="num">Totali</th><th></th></tr></thead><tbody>` +
+      d.clienti.map((c) => `<tr class="${c.active ? '' : 'spenta'}">
+        <td>${c.first_name ?? '(vergine)'} ${c.last_name ?? ''}</td>
+        <td class="code">${c.code}</td>
+        <td class="num">${c.points_balance}</td>
+        <td class="num">${c.points_lifetime}</td>
+        <td class="num"><button class="ghost" style="padding:5px 10px;font-size:13px"
+            data-id="${c.id}" data-active="${c.active}">${c.active ? 'Blocca' : 'Sblocca'}</button></td>
+      </tr>`).join('') + '</tbody>'
+    : '<tbody><tr><td class="hint">Nessun cliente</td></tr></tbody>';
+
+  $('clientiTab').querySelectorAll('button[data-id]').forEach((b) => {
+    b.onclick = async () => {
+      const attivo = b.dataset.active === '1';
+      if (attivo && !confirm('Bloccare questa tessera? I punti restano, ma non potrà più essere usata.')) return;
+      try {
+        await api('/api/titolare/clienti/attiva', {
+          body: { customerId: Number(b.dataset.id), active: !attivo },
+        });
+        banner(attivo ? 'Tessera bloccata' : 'Tessera sbloccata');
+        caricaClienti($('cercaCliente').value);
+      } catch (e) { banner(e.message, 'err'); }
+    };
+  });
+}
+
+// ------------------------------------------------------------- impostazioni
+async function caricaImpostazioni() {
+  const { impostazioni } = await api('/api/titolare/impostazioni');
+  $('setStoreName').value = impostazioni.store_name ?? '';
+  $('setMaxPoints').value = impostazioni.max_points_per_tx ?? '20';
+  $('setVoid').value = impostazioni.void_window_min ?? '30';
+  $('setShowRewards').checked = (impostazioni.show_rewards_to_customer ?? '1') !== '0';
+}
+
+$('salvaImp').onclick = async () => {
+  try {
+    await api('/api/titolare/impostazioni', {
+      body: {
+        store_name: $('setStoreName').value,
+        max_points_per_tx: $('setMaxPoints').value,
+        void_window_min: $('setVoid').value,
+        show_rewards_to_customer: $('setShowRewards').checked ? '1' : '0',
+      },
+    });
+    banner('Impostazioni salvate');
+    boot();
+  } catch (e) { banner(e.message, 'err'); }
+};
+
+$('cambiaPinBtn').onclick = async () => {
+  if (!confirm('Cambiare il PIN di cassa? Tutte le casse aperte dovranno rientrare.')) return;
+  try {
+    await api('/api/titolare/pin-negozio', { body: { pin: $('nuovoPin').value } });
+    $('nuovoPin').value = '';
+    banner('PIN di cassa cambiato. Le casse aperte sono state disconnesse.', 'ok', 10000);
+  } catch (e) { banner(e.message, 'err'); }
+};
+
+boot().catch((e) => banner('Avvio fallito: ' + e.message, 'err', 0));
+</script>
+</body>
+</html>
