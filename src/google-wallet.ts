@@ -165,16 +165,64 @@ function objectBody(c: WalletConfig, card: { code: string; firstName: string | n
   };
 }
 
-/** Crea la classe se manca. Se esiste gia', Google risponde 409 e va benissimo. */
+/**
+ * Crea la classe se manca, e la riallinea se esiste gia'.
+ *
+ * Il riallineamento serve perche' nome del negozio e logo finiscono DENTRO la
+ * classe al momento della creazione: senza, cambiarli dal pannello titolare
+ * aggiornerebbe sito e tessere stampate ma lascerebbe il pass con il nome
+ * vecchio, e la differenza si scoprirebbe solo guardando il telefono di un
+ * cliente. Succede solo quando qualcuno tocca il pulsante, quindi di rado.
+ */
 export async function ensureClass(c: WalletConfig): Promise<void> {
   const token = await accessToken(c.sa);
-  const res = await fetch(`${API}/loyaltyClass`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(classBody(c)),
+  const testata = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const url = `${API}/loyaltyClass/${encodeURIComponent(classId(c))}`;
+  const atteso = classBody(c);
+
+  const letta = await fetch(url, { headers: testata });
+
+  if (letta.status === 404) {
+    const creata = await fetch(`${API}/loyaltyClass`, {
+      method: 'POST',
+      headers: testata,
+      body: JSON.stringify(atteso),
+    });
+    // 409 = l'ha creata qualcun altro nel frattempo, e va benissimo
+    if (!creata.ok && creata.status !== 409) {
+      throw new Error(`Creazione classe fallita (${creata.status}): ${await creata.text()}`);
+    }
+    return;
+  }
+  if (!letta.ok) {
+    throw new Error(`Lettura classe fallita (${letta.status}): ${await letta.text()}`);
+  }
+
+  // Si riscrive SOLO se qualcosa e' davvero cambiato. Google non accetta di
+  // conservare lo stato "approved" durante una modifica e pretende
+  // UNDER_REVIEW: riscrivere a ogni clic rimanderebbe la classe in revisione
+  // senza motivo.
+  const corrente = (await letta.json()) as {
+    issuerName?: string;
+    programLogo?: { sourceUri?: { uri?: string } };
+  };
+  const allineata =
+    corrente.issuerName === atteso.issuerName &&
+    corrente.programLogo?.sourceUri?.uri === atteso.programLogo.sourceUri.uri;
+  if (allineata) return;
+
+  const patch = await fetch(url, {
+    method: 'PATCH',
+    headers: testata,
+    body: JSON.stringify({
+      issuerName: atteso.issuerName,
+      programLogo: atteso.programLogo,
+      reviewStatus: 'UNDER_REVIEW',
+    }),
   });
-  if (res.ok || res.status === 409) return;
-  throw new Error(`Creazione classe fallita (${res.status}): ${await res.text()}`);
+  if (!patch.ok) {
+    throw new Error(`Riallineamento classe fallito (${patch.status}): ${await patch.text()}`);
+  }
 }
 
 /** Crea l'oggetto se manca, altrimenti ne aggiorna il saldo. */
