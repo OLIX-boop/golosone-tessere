@@ -1,15 +1,20 @@
 /**
- * Autenticazione operatori.
+ * Accesso al pannello cassa.
  *
- * Il PIN e' corto per forza (deve essere digitabile in un secondo alla cassa),
- * quindi NON e' un segreto forte: la difesa vera e' che il pannello cassa non
- * e' raggiungibile senza sessione e che ogni movimento resta tracciato con il
- * nome di chi l'ha fatto. Il PIN serve ad attribuire, non a proteggere da un
- * attaccante determinato.
+ * Un solo PIN condiviso, non un account per persona: il pannello si apre dalla
+ * cassa e resta aperto tutto il giorno, e gli operatori non usano il proprio
+ * telefono. Autenticare ogni singola persona sarebbe attrito senza guadagno.
+ *
+ * Conseguenza da tenere presente: i movimenti non portano il nome di chi li ha
+ * fatti. Il PIN serve a tenere fuori chi passa, non a dire chi ha assegnato
+ * cosa. Il tetto per movimento e la finestra di annullo restano le difese
+ * contro l'errore di battitura.
+ *
+ * Il PIN sta in `settings` (hash + salt), quindi si cambia senza rideploy.
  */
 
 const PBKDF2_ITERATIONS = 150_000;
-const SESSION_TTL_SECONDS = 60 * 60 * 14; // un turno di lavoro abbondante
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // la cassa non deve rifare il PIN ogni mattina
 export const SESSION_COOKIE = 'gt_sess';
 
 const enc = new TextEncoder();
@@ -28,12 +33,7 @@ export function randomHex(bytes: number): string {
 export async function hashPin(pin: string, saltHex: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt: enc.encode(saltHex),
-      iterations: PBKDF2_ITERATIONS,
-      hash: 'SHA-256',
-    },
+    { name: 'PBKDF2', salt: enc.encode(saltHex), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
     key,
     256,
   );

@@ -21,42 +21,48 @@
   .primary:disabled{opacity:.45;cursor:not-allowed}
   .ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
   .danger{background:transparent;color:var(--err);border:1px solid var(--err)}
-  input,select{font:inherit;padding:12px 14px;border:1px solid var(--line);
-               border-radius:10px;background:#fff;color:var(--ink);width:100%}
-  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+  input{font:inherit;padding:12px 14px;border:1px solid var(--line);
+        border-radius:10px;background:#fff;color:var(--ink);width:100%}
+  input:focus{outline:2px solid var(--accent);outline-offset:1px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
         padding:20px;margin-bottom:16px}
   .muted{color:var(--muted)}
   .hint{color:var(--muted);font-size:14px;margin:.3em 0 0}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   .grow{flex:1 1 200px}
-  .banner{padding:14px 16px;border-radius:10px;margin-bottom:16px;font-weight:600}
+  .banner{padding:14px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;
+          display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
   .banner.ok{background:var(--ok-bg);color:var(--ok)}
   .banner.err{background:var(--err-bg);color:var(--err)}
+  .banner button{padding:6px 12px;font-size:14px}
   [hidden]{display:none!important}
 
-  /* Barra di stato sempre visibile: chi e' loggato, in che negozio */
   .topbar{display:flex;justify-content:space-between;align-items:center;
           gap:12px;margin-bottom:18px;flex-wrap:wrap}
-  .topbar .who{font-size:14px;color:var(--muted)}
 
   /* Campo scansione: deve essere il posto piu' ovvio dello schermo */
-  #scanForm input{font-size:22px;padding:18px;letter-spacing:.04em}
+  #scanInput{font-size:22px;padding:18px;letter-spacing:.04em}
   .scanlabel{font-weight:600;margin-bottom:8px;display:block}
 
   .cust{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
   .balance{text-align:right}
-  .balance b{font-size:40px;line-height:1;display:block}
+  .balance b{font-size:44px;line-height:1;display:block}
   .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;
         font-size:15px;color:var(--muted)}
+
+  /* Tasti rapidi: un tocco assegna. La fila e' il gesto piu' frequente
+     della giornata, non deve richiedere ne' calcoli ne' conferme. */
+  .quick{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .quick button{font-size:24px;font-weight:700;min-width:76px;padding:18px 10px}
+  .otherpoints{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  .otherpoints input{max-width:150px}
+
   table{width:100%;border-collapse:collapse;font-size:14px}
   td{padding:7px 0;border-bottom:1px solid var(--line)}
   tr.voided td{opacity:.45;text-decoration:line-through}
   td.delta{text-align:right;font-weight:600;white-space:nowrap}
 
   .pinpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:260px;margin-top:14px}
-  /* I tasti numerici sono neutri, ma OK resta accentato: la regola generica
-     sotto sovrascriveva .primary lasciando testo bianco su fondo bianco. */
   .pinpad button{background:#fff;border:1px solid var(--line);font-size:22px;padding:16px}
   .pinpad button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
   .pindots{font-size:30px;letter-spacing:.35em;min-height:40px;color:var(--accent)}
@@ -70,30 +76,26 @@
 
   <div class="topbar">
     <h1 id="shopName">Cassa</h1>
-    <div class="row">
-      <span class="who" id="who"></span>
-      <button class="ghost" id="logoutBtn" hidden>Esci</button>
-    </div>
+    <button class="ghost" id="logoutBtn" hidden>Blocca</button>
   </div>
 
-  <div id="banner" class="banner" hidden></div>
+  <div id="banner" class="banner" hidden><span id="bannerText"></span><span id="bannerAction"></span></div>
 
-  <!-- ============ Primo avvio: creazione del titolare ============ -->
+  <!-- ============ Primo avvio: PIN del negozio ============ -->
   <section id="setupView" class="card" hidden>
     <h2>Primo avvio</h2>
-    <p class="hint">Crea l'account del titolare. Gli altri operatori si aggiungono dopo.</p>
+    <p class="hint">Scegli il PIN del negozio. E uno solo, condiviso da chi sta in cassa.</p>
     <div class="row" style="margin-top:14px">
-      <div class="grow"><input id="setupName" placeholder="Nome del titolare" autocomplete="off"></div>
-      <div class="grow"><input id="setupPin" placeholder="PIN (4-8 cifre)" inputmode="numeric" autocomplete="off"></div>
+      <div class="grow"><input id="setupPin" placeholder="PIN (4-10 cifre)" inputmode="numeric" autocomplete="off"></div>
+      <button class="primary" id="setupBtn">Imposta PIN</button>
     </div>
-    <p class="hint">Il PIN serve a sapere chi ha assegnato cosa, non a proteggere da un hacker: ogni movimento resta tracciato col nome.</p>
-    <div class="row" style="margin-top:14px"><button class="primary" id="setupBtn">Crea account</button></div>
+    <p class="hint">Serve a tenere fuori chi passa, non a dire chi ha assegnato cosa.
+       Contro gli errori di battitura ci sono il tetto per movimento e l'annullo.</p>
   </section>
 
-  <!-- ============ Login operatore ============ -->
+  <!-- ============ Sblocco ============ -->
   <section id="loginView" class="card" hidden>
-    <h2>Chi e in cassa</h2>
-    <select id="operatorSel" style="margin-bottom:14px"></select>
+    <h2>PIN negozio</h2>
     <div class="pindots" id="pinDots"></div>
     <div class="pinpad">
       <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
@@ -115,36 +117,32 @@
       <p class="hint">Lo stesso campo accetta la scansione, il codice digitato, il telefono o il nome.</p>
     </form>
 
-    <!-- piu' clienti trovati -->
     <div id="pickView" class="card" hidden>
       <h2>Quale cliente?</h2>
       <ul class="rewards" id="pickList"></ul>
       <div class="row" style="margin-top:12px"><button class="ghost" id="pickCancel">Annulla</button></div>
     </div>
 
-    <!-- cliente selezionato -->
     <div id="custView" hidden>
       <div class="card">
         <div class="cust">
           <div>
             <h2 id="custName"></h2>
             <p class="code" id="custCode"></p>
-            <p class="hint" id="custCarry"></p>
           </div>
           <div class="balance">
             <b id="custPoints">0</b>
-            <span class="muted">punti</span>
+            <span class="muted" id="custPointsLabel">punti</span>
           </div>
         </div>
 
-        <form id="awardForm" class="row" style="margin-top:18px">
-          <div class="grow">
-            <input id="amountInput" inputmode="decimal" autocomplete="off"
-                   placeholder="Importo scontrino, es. 12,50">
-          </div>
-          <button class="primary" id="awardBtn" type="submit">Assegna punti</button>
-          <button class="ghost" type="button" id="closeCust">Chiudi</button>
-        </form>
+        <div class="quick" id="quickButtons"></div>
+
+        <div class="otherpoints">
+          <input id="pointsInput" inputmode="numeric" autocomplete="off" placeholder="Altri punti">
+          <button class="primary" id="pointsBtn">Assegna</button>
+          <button class="ghost" id="closeCust">Chiudi</button>
+        </div>
       </div>
 
       <div class="card" id="rewardsCard" hidden>
@@ -158,7 +156,6 @@
       </div>
     </div>
 
-    <!-- nuovo cliente -->
     <div id="newView" class="card" hidden>
       <h2>Nuova tessera</h2>
       <div class="row">
@@ -178,30 +175,33 @@
       </div>
     </div>
 
-    <div class="row">
-      <button class="ghost" id="newCustomerBtn">+ Nuova tessera</button>
-    </div>
+    <div class="row"><button class="ghost" id="newCustomerBtn">+ Nuova tessera</button></div>
   </section>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { me: null, customer: null, lastTx: null, rewards: [], centsPerPoint: 500 };
-
-const fmt = (cents) => {
-  const s = cents < 0 ? '-' : '';
-  const a = Math.abs(cents);
-  return s + Math.floor(a / 100) + ',' + String(a % 100).padStart(2, '0');
-};
+const state = { loggedIn: false, customer: null, lastTx: null, rewards: [], maxPoints: 20 };
+const plural = (n) => (Math.abs(n) === 1 ? 'punto' : 'punti');
 
 let bannerTimer;
-function banner(msg, kind = 'ok', ms = 4000) {
+/** `undo` mostra il tasto Annulla dentro il banner: l'errore si corregge dov'e' successo. */
+function banner(msg, kind = 'ok', ms = 5000, undoTxId = null) {
   clearTimeout(bannerTimer);
-  const el = $('banner');
-  el.textContent = msg;
-  el.className = 'banner ' + kind;
-  el.hidden = false;
-  if (ms) bannerTimer = setTimeout(() => { el.hidden = true; }, ms);
+  $('bannerText').textContent = msg;
+  $('banner').className = 'banner ' + kind;
+  $('banner').hidden = false;
+
+  const action = $('bannerAction');
+  action.innerHTML = '';
+  if (undoTxId) {
+    const b = document.createElement('button');
+    b.className = 'danger';
+    b.textContent = 'Annulla';
+    b.onclick = () => undo(undoTxId);
+    action.appendChild(b);
+  }
+  if (ms) bannerTimer = setTimeout(() => { $('banner').hidden = true; }, ms);
 }
 
 async function api(path, opts = {}) {
@@ -213,75 +213,73 @@ async function api(path, opts = {}) {
   });
   let data = {};
   try { data = await res.json(); } catch {}
-  if (res.status === 401 && state.me) { state.me = null; render(); }
+  if (res.status === 401 && state.loggedIn) { state.loggedIn = false; render(); }
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Errore di rete');
   return data;
 }
 
-// ------------------------------------------------------------- viste
 function render() {
-  const setup = state.needsSetup;
-  $('setupView').hidden = !setup;
-  $('loginView').hidden = setup || !!state.me;
-  $('mainView').hidden = setup || !state.me;
-  $('logoutBtn').hidden = !state.me;
-  $('who').textContent = state.me ? state.me.name + (state.me.role === 'admin' ? ' (titolare)' : '') : '';
-  if (state.me) focusScan();
+  $('setupView').hidden = !state.needsSetup;
+  $('loginView').hidden = state.needsSetup || state.loggedIn;
+  $('mainView').hidden = state.needsSetup || !state.loggedIn;
+  $('logoutBtn').hidden = !state.loggedIn;
+  if (state.loggedIn) focusScan();
 }
 
 function focusScan() {
   // Il campo scansione deve essere sempre pronto: il lettore barcode "digita"
   // e preme Invio, quindi se il focus e' altrove la scansione si perde.
   const el = $('scanInput');
-  if (el && !el.hidden) setTimeout(() => el.focus(), 30);
+  if (el && !$('mainView').hidden) setTimeout(() => el.focus(), 30);
 }
 
 async function boot() {
   const b = await api('/api/bootstrap');
   state.needsSetup = b.needsSetup;
-  state.me = b.me;
-  state.centsPerPoint = b.centsPerPoint;
+  state.loggedIn = b.loggedIn;
+  state.maxPoints = b.maxPointsPerTx;
   $('shopName').textContent = b.storeName;
   document.title = 'Cassa - ' + b.storeName;
-  const sel = $('operatorSel');
-  sel.innerHTML = b.operators.map((o) => `<option value="${o.id}">${o.name}</option>`).join('');
+  drawQuickButtons();
+  if (state.loggedIn) await loadRewards();
   render();
 }
 
 // ------------------------------------------------------------- setup
 $('setupBtn').onclick = async () => {
   try {
-    await api('/api/setup', { body: { name: $('setupName').value, pin: $('setupPin').value } });
-    banner('Account creato, ora entra col PIN');
+    await api('/api/setup', { body: { pin: $('setupPin').value } });
+    $('setupPin').value = '';
+    banner('PIN impostato, ora sbloccalo');
     await boot();
   } catch (e) { banner(e.message, 'err'); }
 };
 
-// ------------------------------------------------------------- login
+// ------------------------------------------------------------- sblocco
 let pin = '';
-function drawPin() { $('pinDots').textContent = '•'.repeat(pin.length); }
+const drawPin = () => { $('pinDots').textContent = '•'.repeat(pin.length); };
 document.querySelectorAll('.pinpad button').forEach((b) => {
-  b.onclick = async () => {
+  b.onclick = () => {
     const k = b.dataset.k;
     if (k === 'del') pin = pin.slice(0, -1);
     else if (k === 'ok') return doLogin();
-    else if (pin.length < 8) pin += k;
+    else if (pin.length < 10) pin += k;
     drawPin();
   };
 });
 async function doLogin() {
   try {
-    const r = await api('/api/login', { body: { operatorId: Number($('operatorSel').value), pin } });
-    state.me = r.operator;
+    await api('/api/login', { body: { pin } });
     pin = ''; drawPin();
-    banner('Ciao ' + r.operator.name);
+    state.loggedIn = true;
     await loadRewards();
+    banner('Cassa sbloccata');
     render();
-  } catch (e) { pin = ''; drawPin(); banner(e.message, 'err'); }
+  } catch (e) { pin = ''; drawPin(); banner(e.message, 'err', 8000); }
 }
 $('logoutBtn').onclick = async () => {
   await api('/api/logout', { method: 'POST', body: {} });
-  state.me = null; state.customer = null;
+  state.loggedIn = false; state.customer = null;
   showCustomer(null);
   render();
 };
@@ -293,10 +291,7 @@ $('logoutBtn').onclick = async () => {
 // fallisce la scansione successiva si ACCODA a quella vecchia, mandando i
 // punti a un codice inesistente. Intercettiamo il tasto e basta.
 $('scanInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' || e.key === 'Tab') {
-    e.preventDefault();
-    doLookup();
-  }
+  if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); doLookup(); }
 });
 $('scanForm').onsubmit = (e) => { e.preventDefault(); doLookup(); };
 
@@ -308,11 +303,11 @@ async function doLookup() {
     $('scanInput').value = '';
     if (r.match === 'multiple') return showPicker(r.customers);
     showCustomer(r.customer, r.history);
-  } catch (e2) {
+  } catch (e) {
     // Testo selezionato, non cancellato: l'operatore vede cosa e' arrivato,
     // ma la scansione seguente lo sovrascrive invece di accodarsi.
     $('scanInput').select();
-    banner(e2.message, 'err');
+    banner(e.message, 'err');
   }
 }
 
@@ -321,7 +316,7 @@ function showPicker(list) {
   $('pickView').hidden = false;
   $('pickList').innerHTML = list
     .map((c) => `<li><span>${c.first_name} ${c.last_name || ''}<br><span class="code">${c.code}</span></span>
-                 <button class="primary" data-id="${c.id}" data-code="${c.code}">Scegli</button></li>`)
+                 <button class="primary" data-code="${c.code}">Scegli</button></li>`)
     .join('');
   $('pickList').querySelectorAll('button').forEach((b) => {
     b.onclick = async () => {
@@ -342,40 +337,23 @@ function showCustomer(c, history) {
   $('custName').textContent = c.first_name + ' ' + (c.last_name || '');
   $('custCode').textContent = c.code;
   $('custPoints').textContent = c.points_balance;
-  const missing = state.centsPerPoint - c.cents_carry;
-  $('custCarry').textContent = 'Mancano ' + fmt(missing) + ' EUR al prossimo punto';
+  $('custPointsLabel').textContent = plural(c.points_balance);
   if (history) drawHistory(history);
   drawRewards();
-  setTimeout(() => $('amountInput').focus(), 30);
 }
 $('closeCust').onclick = (e) => { e.preventDefault(); showCustomer(null); };
 
 function drawHistory(rows) {
   $('histTable').innerHTML = rows.length
     ? rows.map((h) => {
-        const d = new Date(h.created_at * 1000).toLocaleDateString('it-IT',
-          { day: '2-digit', month: '2-digit' });
-        const label = h.kind === 'redeem' ? (h.reward_name || 'Premio') : 'Spesa ' + fmt(h.amount_cents) + ' EUR';
+        const d = new Date(h.created_at * 1000).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
+        const label = h.kind === 'redeem' ? (h.reward_name || 'Premio') : 'Punti assegnati';
         const delta = h.points_delta > 0 ? '+' + h.points_delta : h.points_delta;
-        const undo = (!h.voided_at && h.id === state.lastTx)
-          ? ` <button class="danger" style="padding:4px 10px;font-size:13px" data-void="${h.id}">Annulla</button>` : '';
         return `<tr class="${h.voided_at ? 'voided' : ''}"><td>${d}</td>
-          <td>${label}${h.voided_at ? ' (annullato)' : ''} <span class="muted">${h.operator_name || ''}</span></td>
-          <td class="delta">${h.voided_at ? '—' : delta}${undo}</td></tr>`;
+          <td>${label}${h.voided_at ? ' (annullato)' : ''}</td>
+          <td class="delta">${h.voided_at ? '—' : delta}</td></tr>`;
       }).join('')
     : '<tr><td class="muted">Nessun movimento</td></tr>';
-
-  $('histTable').querySelectorAll('[data-void]').forEach((b) => {
-    b.onclick = async () => {
-      if (!confirm('Annullare questo movimento?')) return;
-      try {
-        const r = await api('/api/cassa/void', { body: { transactionId: Number(b.dataset.void) } });
-        state.lastTx = null;
-        banner('Movimento annullato');
-        await refreshCustomer(r.customer);
-      } catch (e) { banner(e.message, 'err'); }
-    };
-  });
 }
 
 async function refreshCustomer(c) {
@@ -383,33 +361,59 @@ async function refreshCustomer(c) {
   showCustomer(c, h.history);
 }
 
-// ------------------------------------------------------------- assegnazione
-$('amountInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); $('awardForm').requestSubmit(); }
+// ------------------------------------------------------------- punti
+/**
+ * Un tocco assegna, senza conferma. In una fila della domenica mattina un
+ * passaggio di conferma in piu' costa piu' di un errore raro, e l'errore ha
+ * comunque l'Annulla subito li' nel banner.
+ */
+function drawQuickButtons() {
+  const preset = [1, 2, 3, 5].filter((n) => n <= state.maxPoints);
+  $('quickButtons').innerHTML = preset
+    .map((n) => `<button class="primary" data-points="${n}">+${n}</button>`)
+    .join('');
+  $('quickButtons').querySelectorAll('[data-points]').forEach((b) => {
+    b.onclick = () => award(Number(b.dataset.points));
+  });
+}
+
+$('pointsInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('pointsBtn').click(); }
 });
-$('awardForm').onsubmit = async (e) => {
-  e.preventDefault();
+$('pointsBtn').onclick = () => {
+  const v = $('pointsInput').value.trim();
+  if (v) award(v);
+};
+
+async function award(points) {
   if (!state.customer) return;
-  const amount = $('amountInput').value.trim();
-  if (!amount) return;
-  $('awardBtn').disabled = true;
+  const buttons = document.querySelectorAll('#quickButtons button, #pointsBtn');
+  buttons.forEach((b) => (b.disabled = true));
   try {
-    const r = await api('/api/cassa/award', { body: { customerId: state.customer.id, amount } });
+    const r = await api('/api/cassa/points', { body: { customerId: state.customer.id, points } });
     state.lastTx = r.transactionId;
-    $('amountInput').value = '';
+    $('pointsInput').value = '';
     banner(
-      r.pointsEarned > 0
-        ? `+${r.pointsEarned} ${r.pointsEarned === 1 ? 'punto' : 'punti'} a ${r.customer.first_name}. Totale: ${r.customer.points_balance}`
-        : `Nessun punto: mancano ${fmt(r.centsToNextPoint)} EUR al prossimo`,
+      `+${r.pointsAdded} ${plural(r.pointsAdded)} a ${r.customer.first_name}. Totale: ${r.customer.points_balance}`,
+      'ok', 8000, r.transactionId,
     );
     await refreshCustomer(r.customer);
-  } catch (e2) {
-    banner(e2.message, 'err');
-    $('amountInput').select();
+  } catch (e) {
+    banner(e.message, 'err');
+    $('pointsInput').select();
   } finally {
-    $('awardBtn').disabled = false;
+    buttons.forEach((b) => (b.disabled = false));
   }
-};
+}
+
+async function undo(txId) {
+  try {
+    const r = await api('/api/cassa/void', { body: { transactionId: txId } });
+    state.lastTx = null;
+    banner('Movimento annullato');
+    await refreshCustomer(r.customer);
+  } catch (e) { banner(e.message, 'err'); }
+}
 
 // ------------------------------------------------------------- premi
 async function loadRewards() {
@@ -428,8 +432,7 @@ function drawRewards() {
       try {
         const r = await api('/api/cassa/redeem',
           { body: { customerId: state.customer.id, rewardId: Number(b.dataset.reward) } });
-        state.lastTx = r.transactionId;
-        banner('Premio consegnato: ' + r.reward.name);
+        banner('Premio consegnato: ' + r.reward.name, 'ok', 8000, r.transactionId);
         await refreshCustomer(r.customer);
       } catch (e) { banner(e.message, 'err'); }
     };
@@ -455,15 +458,15 @@ $('createBtn').onclick = async () => {
     ['nFirst', 'nLast', 'nPhone'].forEach((i) => ($(i).value = ''));
     $('nConsent').checked = false;
     $('newView').hidden = true;
-    banner('Tessera creata: ' + r.customer.code, 'ok', 8000);
+    banner('Tessera creata: ' + r.customer.code, 'ok', 10000);
     showCustomer(r.customer, []);
   } catch (e) { banner(e.message, 'err'); }
 };
 
-// Se l'operatore clicca a vuoto, il focus torna al campo scansione:
-// il lettore barcode non deve mai "scrivere nel vuoto".
+// Se si clicca a vuoto il focus torna al campo scansione: il lettore barcode
+// non deve mai "scrivere nel vuoto".
 document.addEventListener('click', (e) => {
-  if (!state.me) return;
+  if (!state.loggedIn) return;
   if (e.target.closest('input,select,button,a,label')) return;
   focusScan();
 });

@@ -1,23 +1,28 @@
 -- ============================================================
--- Golosone Tessere - schema iniziale
+-- Tessere punti - schema iniziale
+--
 -- Regole di fondo:
---   * transactions e' la fonte di verita': i saldi su customers
---     sono una cache ricalcolabile.
---   * gli importi sono SEMPRE in centesimi interi, mai float.
+--   * si registrano PUNTI, non importi. L'operatore decide quanti
+--     punti vale uno scontrino e li assegna: non esiste un prezzo
+--     scritto che il cliente possa contestare, e le spese minime
+--     non accumulano residui verso un punto che non hanno pagato.
+--   * un solo PIN condiviso: il pannello si apre dalla cassa e resta
+--     aperto, autenticare ogni singolo operatore sarebbe attrito
+--     senza guadagno.
 --   * il codice cliente e' opaco e immutabile: non contiene dati.
 -- ============================================================
 
 PRAGMA foreign_keys = ON;
 
--- Parametri modificabili senza toccare il codice.
+-- Parametri modificabili senza toccare il codice (PIN compreso).
 CREATE TABLE IF NOT EXISTS settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
--- Un negozio solo per ora, ma la colonna store_id c'e' ovunque:
--- aggiungerla dopo sarebbe una migrazione dolorosa, adesso costa zero.
+-- Un negozio solo per ora, ma store_id c'e' ovunque: aggiungerlo
+-- dopo sarebbe una migrazione dolorosa, adesso costa zero.
 CREATE TABLE IF NOT EXISTS stores (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT    NOT NULL,
@@ -25,25 +30,13 @@ CREATE TABLE IF NOT EXISTS stores (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
-CREATE TABLE IF NOT EXISTS operators (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  store_id   INTEGER NOT NULL REFERENCES stores(id),
-  name       TEXT    NOT NULL,
-  pin_hash   TEXT    NOT NULL,
-  pin_salt   TEXT    NOT NULL,
-  -- 'admin' vede i report e gestisce i premi, 'cassa' assegna e basta.
-  role       TEXT    NOT NULL DEFAULT 'cassa' CHECK (role IN ('admin','cassa')),
-  active     INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL DEFAULT (unixepoch())
-);
-CREATE INDEX IF NOT EXISTS idx_operators_store ON operators(store_id, active);
-
+-- Sessione del dispositivo, non della persona: la cassa entra una
+-- volta col PIN e resta dentro per tutta la giornata.
 CREATE TABLE IF NOT EXISTS sessions (
-  -- si salva l'hash del token, mai il token in chiaro
-  token_hash  TEXT    PRIMARY KEY,
-  operator_id INTEGER NOT NULL REFERENCES operators(id) ON DELETE CASCADE,
-  expires_at  INTEGER NOT NULL,
-  created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+  token_hash TEXT    PRIMARY KEY,   -- si salva l'hash, mai il token
+  label      TEXT,                  -- 'cassa', 'telefono'... solo descrittivo
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 
@@ -54,17 +47,15 @@ CREATE TABLE IF NOT EXISTS customers (
   store_id       INTEGER NOT NULL REFERENCES stores(id),
   first_name     TEXT    NOT NULL,
   last_name      TEXT,
-  -- phone_norm serve per la ricerca "ho dimenticato la tessera"
+  -- phone_norm serve alla ricerca "ho dimenticato la tessera"
   phone          TEXT,
   phone_norm     TEXT,
   email          TEXT,
   marketing_consent INTEGER NOT NULL DEFAULT 0,
   consent_at     INTEGER,
 
-  -- cache dei saldi (ricalcolabile da transactions)
-  points_balance INTEGER NOT NULL DEFAULT 0,
-  cents_carry    INTEGER NOT NULL DEFAULT 0,  -- resto verso il punto successivo
-  lifetime_cents INTEGER NOT NULL DEFAULT 0,
+  points_balance  INTEGER NOT NULL DEFAULT 0,  -- punti spendibili adesso
+  points_lifetime INTEGER NOT NULL DEFAULT 0,  -- totale storico, solo statistica
 
   active         INTEGER NOT NULL DEFAULT 1,
   created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -85,23 +76,20 @@ CREATE TABLE IF NOT EXISTS rewards (
 );
 CREATE INDEX IF NOT EXISTS idx_rewards_store ON rewards(store_id, active, sort_order);
 
--- Registro movimenti: append-only. Un errore si annulla con void, non si cancella.
+-- Registro movimenti. Un errore si annulla, non si cancella: serve a
+-- spiegare un saldo, non a fare da scontrino.
 CREATE TABLE IF NOT EXISTS transactions (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   customer_id  INTEGER NOT NULL REFERENCES customers(id),
-  operator_id  INTEGER NOT NULL REFERENCES operators(id),
   store_id     INTEGER NOT NULL REFERENCES stores(id),
   kind         TEXT    NOT NULL CHECK (kind IN ('earn','redeem','adjust')),
-  amount_cents INTEGER NOT NULL DEFAULT 0,   -- solo per 'earn'
-  points_delta INTEGER NOT NULL,             -- +guadagnati / -spesi
+  points_delta INTEGER NOT NULL,           -- +assegnati / -spesi
   reward_id    INTEGER REFERENCES rewards(id),
   note         TEXT,
   voided_at    INTEGER,
-  voided_by    INTEGER REFERENCES operators(id),
   created_at   INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_tx_customer ON transactions(customer_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_tx_operator ON transactions(operator_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tx_store_day ON transactions(store_id, created_at DESC);
 
 -- ------------------------------------------------------------
@@ -109,9 +97,10 @@ CREATE INDEX IF NOT EXISTS idx_tx_store_day ON transactions(store_id, created_at
 -- ------------------------------------------------------------
 INSERT OR IGNORE INTO stores (id, name) VALUES (1, 'Pasticceria');
 
--- 500 centesimi = 1 punto. Modificabile da qui senza rideploy.
 INSERT OR IGNORE INTO settings (key, value) VALUES
-  ('cents_per_point',  '500'),
-  ('store_name',       'Pasticceria'),
-  ('void_window_min',  '15'),     -- minuti entro cui la cassa puo' annullare
-  ('max_amount_cents', '50000');  -- tetto anti-errore di battitura: 500 EUR
+  ('store_name',               'Pasticceria'),
+  ('void_window_min',          '30'),   -- minuti entro cui annullare un movimento
+  -- Tetto anti-errore di battitura: con l'inserimento diretto dei punti,
+  -- un 2 che diventa 22 e' una tortina regalata senza accorgersene.
+  ('max_points_per_tx',        '20'),
+  ('show_rewards_to_customer', '1');

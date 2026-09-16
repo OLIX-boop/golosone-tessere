@@ -1,55 +1,40 @@
 /**
- * Regole punti. Funzioni pure, nessun accesso al database: cosi' si testano
- * da sole e la regola resta in un posto solo.
+ * Validazione dei punti. Funzioni pure, nessun accesso al database.
  *
- * Scelta di fondo: NON si buttano via i centesimi che avanzano.
- * Una spesa di 12 EUR con soglia a 5 EUR da' 2 punti e lascia 2 EUR "in cassa"
- * sul conto del cliente, che si sommano all'acquisto successivo. E' piu' equo,
- * ed e' anche il motivo per cui in database teniamo cents_carry invece di
- * ricalcolare i punti dal totale speso.
+ * Il sistema NON converte importi in punti: l'operatore guarda lo scontrino,
+ * decide quanti punti vale e li assegna. Due conseguenze volute:
+ *
+ *   - non resta scritto da nessuna parte un prezzo che il cliente possa
+ *     contestare se l'operatore ha digitato di fretta;
+ *   - le spese minime non lasciano un residuo che, sommandosi, finisce per
+ *     pagare un punto su vendite che non hanno margine.
+ *
+ * Il prezzo di questa scelta e' che i punti assegnati non sono ricalcolabili
+ * da nient'altro: sono loro il dato. Per questo esiste un tetto per movimento
+ * e la possibilita' di annullare.
  */
 
-export type EarnResult = {
-  pointsEarned: number;
-  newCarry: number;
-  /** centesimi che mancano al prossimo punto, per mostrarlo al cliente */
-  centsToNextPoint: number;
-};
+export type ParsedPoints = { ok: true; points: number } | { ok: false; error: string };
 
-export function computeEarn(
-  currentCarry: number,
-  amountCents: number,
-  centsPerPoint: number,
-): EarnResult {
-  if (!Number.isInteger(amountCents) || amountCents < 0) {
-    throw new Error('amountCents deve essere un intero non negativo');
+export function parsePoints(raw: string | number, maxPerTx: number): ParsedPoints {
+  const cleaned = String(raw ?? '').trim().replace(/\s|punti|punto/gi, '');
+  if (!cleaned) return { ok: false, error: 'Inserisci quanti punti assegnare' };
+
+  // Solo interi positivi: mezzi punti non esistono, e "2,5" e' quasi sempre
+  // un importo digitato per sbaglio nel campo dei punti.
+  if (!/^\d{1,4}$/.test(cleaned)) {
+    return { ok: false, error: 'I punti sono un numero intero, es. 2' };
   }
-  if (!Number.isInteger(centsPerPoint) || centsPerPoint <= 0) {
-    throw new Error('centsPerPoint deve essere un intero positivo');
+
+  const points = Number(cleaned);
+  if (points === 0) return { ok: false, error: 'Zero punti: niente da assegnare' };
+  if (points > maxPerTx) {
+    return { ok: false, error: `Massimo ${maxPerTx} punti per volta: correggi o chiedi al titolare` };
   }
-  const total = currentCarry + amountCents;
-  const pointsEarned = Math.floor(total / centsPerPoint);
-  const newCarry = total % centsPerPoint;
-  return {
-    pointsEarned,
-    newCarry,
-    centsToNextPoint: centsPerPoint - newCarry,
-  };
+  return { ok: true, points };
 }
 
-/** Converte "12,50" / "12.50" / "1250" in centesimi interi, senza float. */
-export function parseAmountToCents(raw: string): number | null {
-  const cleaned = (raw ?? '').trim().replace(/\s|EUR|€/gi, '').replace(',', '.');
-  if (!cleaned) return null;
-  if (!/^\d+(\.\d{0,2})?$/.test(cleaned)) return null;
-
-  const [intPart, decPart = ''] = cleaned.split('.');
-  const cents = Number(intPart) * 100 + Number(decPart.padEnd(2, '0'));
-  return Number.isSafeInteger(cents) ? cents : null;
-}
-
-export function formatCents(cents: number): string {
-  const sign = cents < 0 ? '-' : '';
-  const abs = Math.abs(cents);
-  return `${sign}${Math.floor(abs / 100)},${String(abs % 100).padStart(2, '0')}`;
+/** "punto" / "punti" al posto giusto: compare in ogni schermata. */
+export function pointsLabel(n: number): string {
+  return Math.abs(n) === 1 ? 'punto' : 'punti';
 }
