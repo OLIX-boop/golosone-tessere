@@ -18,7 +18,7 @@
       "database_name": "tessere",
       // In locale l'id non viene usato. Va sostituito con quello vero
       // dopo `wrangler d1 create tessere` per il deploy in produzione.
-      "database_id": "local-dev-placeholder"
+      "database_id": "f576f431-fb47-48fc-963b-ebb914f4c199"
     }
   ],
 
