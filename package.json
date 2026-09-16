@@ -9,7 +9,7 @@
     "db:local": "wrangler d1 execute tessere --local --file=./migrations/0001_init.sql",
     "db:remote": "wrangler d1 execute tessere --remote --file=./migrations/0001_init.sql",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.ts\"",
     "db:seed": "wrangler d1 execute tessere --local --file=./migrations/0002_premi_esempio.sql"
   },
   "dependencies": {
