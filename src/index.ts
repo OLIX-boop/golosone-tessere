@@ -942,7 +942,7 @@ app.post('/api/tessera/:code/attiva', async (c) => {
   if (!card) return c.json(fail('Tessera non trovata'), 404);
   if (card.activated_at) return c.json(fail('Questa tessera e gia attiva'), 409);
 
-  type Modulo = { firstName?: string; phone?: string; consent?: boolean };
+  type Modulo = { firstName?: string; phone?: string };
   // corpo assente o malformato: si prosegue a mani vuote e sara' il controllo
   // sul nome a rispondere, invece di far esplodere la rotta
   const body = await c.req.json<Modulo>().catch((): Modulo => ({}));
@@ -958,7 +958,9 @@ app.post('/api/tessera/:code/attiva', async (c) => {
       customerId: card.id,
       firstName: nome,
       phone: body.phone,
-      consent: body.consent,
+      // Niente consenso da chiedere: il negozio non manda promozioni, e un
+      // consenso raccolto e mai usato e' solo un dato in piu' da custodire.
+      consent: false,
     });
     return c.json({ ok: true, firstName: customer.first_name });
   } catch (err) {
@@ -1011,8 +1013,11 @@ type HistoryRow = {
  *
  * Chiede il minimo indispensabile: il nome. Il telefono e' facoltativo e
  * serve a una cosa sola - ritrovare la tessera quando il cliente la dimentica
- * a casa - e lo dice, invece di raccoglierlo e basta. Il consenso e' spento di
- * default: e' un consenso, non un modulo da sbrigare.
+ * a casa - e lo dice, invece di raccoglierlo e basta.
+ *
+ * Niente spunta per le promozioni: il negozio non ne manda, e chiedere un
+ * consenso che non si usera' aggiunge un campo da compilare in piedi e un
+ * dato in piu' da custodire, in cambio di niente.
  *
  * Niente cognome: la pagina mostra solo il nome di battesimo, e chiedere un
  * dato che non si usa e' solo un campo in piu' da compilare in piedi.
@@ -1035,11 +1040,6 @@ function paginaAttivazione(head: string, storeName: string, code: string): strin
       <label for="tel">Telefono <span class="facolt">facoltativo</span></label>
       <input id="tel" type="tel" inputmode="tel" autocomplete="tel" maxlength="25"
              placeholder="Serve solo se dimentichi la tessera">
-
-      <label class="spunta">
-        <input id="consenso" type="checkbox">
-        <span>Avvisatemi delle novità e delle promozioni</span>
-      </label>
 
       <button class="bottone" type="submit" id="vai">Attiva la tessera</button>
       <p class="hint errore" id="esito" role="status"></p>
@@ -1079,7 +1079,6 @@ function paginaAttivazione(head: string, storeName: string, code: string): strin
         body: JSON.stringify({
           firstName: nome,
           phone: document.getElementById('tel').value.trim() || undefined,
-          consent: document.getElementById('consenso').checked,
         }),
       });
       const dati = await r.json();

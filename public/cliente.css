@@ -68,9 +68,6 @@ footer .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   border:1px solid var(--line);background:var(--bg);color:var(--ink);
 }
 .modulo input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.spunta{display:flex;align-items:flex-start;gap:10px;margin-top:18px;
-        font-size:14px;font-weight:400;color:var(--ink)}
-.spunta input{flex:none;width:20px;height:20px;margin:1px 0 0;accent-color:var(--accent)}
 .modulo .bottone{width:100%;border:0;font:inherit;font-weight:600;
                  cursor:pointer;margin-top:20px;text-align:center}
 .modulo .bottone:disabled{opacity:.55;cursor:progress}
