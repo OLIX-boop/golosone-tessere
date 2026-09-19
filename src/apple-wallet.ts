@@ -173,20 +173,36 @@ export async function passJson(c: AppleConfig, card: CardData): Promise<string> 
  * La STRISCIA e' quella che fa la differenza fra una tessera e un rettangolo
  * di colore piatto: e' la fascia dietro il numero dei punti.
  */
-const IMMAGINI_PASS = [
-  'icon.png', 'icon@2x.png', 'icon@3x.png',
-  'logo.png', 'logo@2x.png', 'logo@3x.png',
-  'strip.png', 'strip@2x.png', 'strip@3x.png',
+/**
+ * A sinistra il nome dentro il pass, a destra quello del file salvato.
+ *
+ * Non coincidono per un motivo preciso: Apple pretende `@2x` e `@3x`, ma la
+ * CDN di Cloudflare non serve una chiocciola cosi' com'e', risponde 307 e
+ * rimanda alla versione con `%40`. Qui un 307 non e' `ok`, quindi l'immagine
+ * verrebbe scartata in silenzio - e un pass senza `icon.png` iOS lo rifiuta
+ * senza dire perche'.
+ *
+ * Si potrebbe codificare la chiocciola nella richiesta, ma e' piu' solido non
+ * averla affatto nei nomi dei file: la traduzione avviene qui, una volta, in
+ * un punto che si legge.
+ *
+ * In locale il problema non si vede: e' una differenza fra il runtime di
+ * sviluppo e la CDN vera.
+ */
+const IMMAGINI_PASS: [nelPass: string, file: string][] = [
+  ['icon.png', 'icon-1x.png'], ['icon@2x.png', 'icon-2x.png'], ['icon@3x.png', 'icon-3x.png'],
+  ['logo.png', 'logo-1x.png'], ['logo@2x.png', 'logo-2x.png'], ['logo@3x.png', 'logo-3x.png'],
+  ['strip.png', 'strip-1x.png'], ['strip@2x.png', 'strip-2x.png'], ['strip@3x.png', 'strip-3x.png'],
 ];
 
 async function immagini(assets: Fetcher | undefined, origin: string): Promise<ZipEntry[]> {
   if (!assets) return [];
 
-  const leggi = async (nome: string): Promise<ZipEntry | null> => {
+  const leggi = async ([nelPass, file]: [string, string]): Promise<ZipEntry | null> => {
     try {
-      const res = await assets.fetch(`${origin}/pass/${nome}`);
+      const res = await assets.fetch(`${origin}/pass/${file}`);
       if (!res.ok) return null;
-      return { name: nome, data: new Uint8Array(await res.arrayBuffer()) };
+      return { name: nelPass, data: new Uint8Array(await res.arrayBuffer()) };
     } catch {
       return null;
     }

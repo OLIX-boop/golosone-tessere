@@ -184,23 +184,27 @@ const salva = (percorso, buf) => {
 // Google: quadrato e opaco, servito dalla CDN.
 salva(`${argDove}/logo.png`, await quadrato(660));
 
-// Apple: dentro il .pkpass, gia' coi nomi che si aspetta.
-salva(`${argDove}/pass/icon.png`, await quadrato(29));
-salva(`${argDove}/pass/icon@2x.png`, await quadrato(58));
-salva(`${argDove}/pass/icon@3x.png`, await quadrato(87));
+// Apple: dentro il .pkpass ci vogliono i nomi con @2x e @3x, ma i FILE qui
+// non li portano. La CDN di Cloudflare non serve una chiocciola cosi' com'e':
+// risponde 307 e rimanda alla versione con %40, e un 307 il Worker lo scarta
+// come immagine mancante - producendo un pass senza icona, che iOS rifiuta
+// senza spiegare niente. La traduzione dei nomi sta in src/apple-wallet.ts.
+salva(`${argDove}/pass/icon-1x.png`, await quadrato(29));
+salva(`${argDove}/pass/icon-2x.png`, await quadrato(58));
+salva(`${argDove}/pass/icon-3x.png`, await quadrato(87));
 
-salva(`${argDove}/pass/logo.png`, await largo(160, 50));
-salva(`${argDove}/pass/logo@2x.png`, await largo(320, 100));
-salva(`${argDove}/pass/logo@3x.png`, await largo(480, 150));
+salva(`${argDove}/pass/logo-1x.png`, await largo(160, 50));
+salva(`${argDove}/pass/logo-2x.png`, await largo(320, 100));
+salva(`${argDove}/pass/logo-3x.png`, await largo(480, 150));
 
 if (S.striscia) {
-  salva(`${argDove}/pass/strip.png`, await striscia(375, 123));
-  salva(`${argDove}/pass/strip@2x.png`, await striscia(750, 246));
-  salva(`${argDove}/pass/strip@3x.png`, await striscia(1125, 369));
+  salva(`${argDove}/pass/strip-1x.png`, await striscia(375, 123));
+  salva(`${argDove}/pass/strip-2x.png`, await striscia(750, 246));
+  salva(`${argDove}/pass/strip-3x.png`, await striscia(1125, 369));
 } else {
   // Lo stile minimo non ha striscia: se ne restassero in giro di un altro
   // stile, il Worker le infilerebbe comunque nel pacchetto.
-  for (const n of ['strip.png', 'strip@2x.png', 'strip@3x.png']) {
+  for (const n of ['strip-1x.png', 'strip-2x.png', 'strip-3x.png']) {
     rmSync(`${argDove}/pass/${n}`, { force: true });
   }
   console.log('  (stile senza striscia: eventuali strip precedenti rimosse)');

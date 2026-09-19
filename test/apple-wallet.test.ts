@@ -301,6 +301,33 @@ test('senza icona il pass si costruisce lo stesso, ma senza immagini', async () 
   assert.ok(!file.has('icon.png'));
 });
 
+/**
+ * Regressione, scoperta solo in produzione: la CDN di Cloudflare non serve
+ * una chiocciola cosi' com'e', risponde 307 e rimanda a `%40`. Un 307 qui non
+ * e' `ok`, quindi l'immagine veniva scartata in silenzio e il pass usciva
+ * senza icona - cioe' rifiutato da iOS, senza spiegazioni. In locale non si
+ * vedeva: il runtime di sviluppo la chiocciola la serve.
+ */
+test('i file chiesti alla CDN non contengono la chiocciola', async () => {
+  const chiesti: string[] = [];
+  const spia = {
+    fetch: async (url: string) => {
+      chiesti.push(new URL(url).pathname);
+      return new Response(new Uint8Array([1, 2, 3, 4]));
+    },
+  } as any;
+
+  const file = leggiZip(await buildPkpass(config, tessera, spia));
+
+  assert.ok(chiesti.length > 0, 'non e stata chiesta nessuna immagine');
+  for (const p of chiesti) {
+    assert.ok(!p.includes('@'), `${p} verrebbe reindirizzato dalla CDN e perso`);
+  }
+  // dentro il pass i nomi con la chiocciola invece ci vogliono: li' li pretende Apple
+  assert.ok(file.has('icon@2x.png'), 'dentro il pass i nomi Apple devono restare');
+  assert.ok(file.has('logo@3x.png'));
+});
+
 test('se un immagine manca il pass si costruisce lo stesso, senza quella', async () => {
   const senzaStriscia = {
     fetch: async (url: string) =>
