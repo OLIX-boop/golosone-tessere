@@ -14,7 +14,14 @@ import {
 import { isValidCode, normalizeCode, parseInput } from './codes.ts';
 import { parsePoints, pointsLabel } from './points.ts';
 import { qrSvg } from './qr.ts';
-import { ensureClass, readConfig, readConfigDetailed, saveLink, upsertObject } from './google-wallet.ts';
+import {
+  ensureClass,
+  logoVersion,
+  readConfig,
+  readConfigDetailed,
+  saveLink,
+  upsertObject,
+} from './google-wallet.ts';
 import {
   WEB_SERVICE_PATH,
   authToken as applePassToken,
@@ -641,6 +648,10 @@ app.get('/c/:code/wallet', async (c) => {
   if (!card || !card.activated_at) return c.text('Tessera non trovata', 404);
 
   try {
+    // L'impronta del logo entra nel suo indirizzo: e' l'unico modo perche'
+    // Google si accorga che il file e' cambiato, visto che il riallineamento
+    // confronta indirizzi e non immagini.
+    cfg.logoVersion = await logoVersion(c.env.ASSETS, new URL(c.req.url).origin);
     await ensureClass(cfg);
     await upsertObject(cfg, {
       code: card.code,

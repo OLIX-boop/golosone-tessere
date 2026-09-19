@@ -30,6 +30,16 @@ export type WalletConfig = {
   classSuffix: string;
   storeName: string;
   origin: string;
+  /**
+   * Impronta corta del logo, da appendere al suo indirizzo.
+   *
+   * Google copia l'immagine quando crea la classe e poi non la riguarda piu':
+   * sostituire il file lascia le tessere gia' emesse col logo vecchio, e il
+   * riallineamento non se ne accorge perche' confronta gli INDIRIZZI, che
+   * sono rimasti identici. Legando l'indirizzo al contenuto, cambiare il logo
+   * cambia anche l'indirizzo, e la classe si riallinea da sola.
+   */
+  logoVersion?: string;
 };
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -115,6 +125,31 @@ export async function accessToken(sa: ServiceAccount): Promise<string> {
 
 // ------------------------------------------------------------ classe/oggetto
 
+/**
+ * Impronta corta del logo servito dal Worker.
+ *
+ * Quattro byte bastano: non serve resistere a nessun attacco, serve solo che
+ * l'indirizzo cambi quando cambia l'immagine.
+ */
+export async function logoVersion(
+  assets: Fetcher | undefined,
+  origin: string,
+): Promise<string | undefined> {
+  if (!assets) return undefined;
+  try {
+    const res = await assets.fetch(`${origin}/logo.png`);
+    if (!res.ok) return undefined;
+    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', await res.arrayBuffer()));
+    return [...d.slice(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    // il logo non si legge: si prosegue senza versione, come prima
+    return undefined;
+  }
+}
+
+export const logoUri = (c: WalletConfig) =>
+  `${c.origin}/logo.png${c.logoVersion ? `?v=${c.logoVersion}` : ''}`;
+
 export const classId = (c: WalletConfig) => `${c.issuerId}.${c.classSuffix}`;
 export const objectId = (c: WalletConfig, code: string) =>
   // solo alfanumerici, punti, trattini e underscore: il codice tessera
@@ -133,7 +168,7 @@ function classBody(c: WalletConfig) {
     // "LoyaltyClass cannot be created without a program logo".
     // L'immagine la serve il Worker stesso, cosi' non serve ospitarla altrove.
     programLogo: {
-      sourceUri: { uri: `${c.origin}/logo.png` },
+      sourceUri: { uri: logoUri(c) },
       contentDescription: {
         defaultValue: { language: 'it', value: `Logo ${c.storeName}` },
       },
