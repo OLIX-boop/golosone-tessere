@@ -123,6 +123,27 @@ L'intestazione dalla cassa **resta**, per chi non ha uno smartphone o non se
 la cava: e' la stessa rotta di prima, e compare scansionando una tessera
 vergine.
 
+Da questa scelta discende una conseguenza che vale la pena avere in mente: da
+quando il nome lo scrive il cliente, e' **testo che arriva da fuori** e che i
+due pannelli mostrano a schermo. Per questo li' i nomi passano da una
+funzione di escape prima di finire nella pagina - senza, un nome scritto
+apposta potrebbe eseguire codice dentro un pannello gia' sbloccato.
+
+### Tessera smarrita
+
+Il cliente si presenta senza cartoncino e senza tessera nel telefono. Nel
+pannello cassa c'e' un riquadro apposta: si cerca il suo numero (o il nome) e
+compare il **QR da fargli inquadrare dallo schermo della cassa**, che lo porta
+alla sua pagina e da li' al Wallet.
+
+Il QR non si ricostruisce a mano da un indirizzo: chi sta al banco non deve
+comporre link. E sta dietro la sessione di cassa, perche' porta al saldo di
+una persona.
+
+Se allo stesso numero corrispondono piu' tessere - una famiglia - si sceglie
+da un elenco invece di indovinare: mostrare il QR sbagliato significa mostrare
+a un cliente i punti di un altro.
+
 Il prezzo di questa scelta: attivare non richiede piu' una cassa sbloccata,
 quindi **chiunque abbia il codice di una tessera vergine puo' intestarsela**.
 Regge per tre ragioni messe insieme: i codici non si indovinano (28 caratteri

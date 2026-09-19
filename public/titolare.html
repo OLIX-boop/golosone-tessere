@@ -249,6 +249,14 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+/**
+ * Il nome del cliente lo scrive il CLIENTE, dal proprio telefono, da quando
+ * le tessere si attivano col QR. Qui finisce dentro innerHTML: senza questa
+ * funzione, un nome come <img src=x onerror=...> verrebbe eseguito dentro un
+ * pannello gia' sbloccato, che e' il posto peggiore.
+ */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const stato = { report: null, premi: [] };
 
 let bannerTimer;
@@ -533,8 +541,8 @@ async function caricaClienti(q = '') {
     ? `<thead><tr><th>Cliente</th><th>Tessera</th><th class="num">Punti</th>
        <th class="num">Totali</th><th></th></tr></thead><tbody>` +
       d.clienti.map((c) => `<tr class="${c.active ? '' : 'spenta'}">
-        <td>${c.first_name ?? '(vergine)'} ${c.last_name ?? ''}</td>
-        <td class="code">${c.code}</td>
+        <td>${esc(c.first_name ?? '(vergine)')} ${esc(c.last_name ?? '')}</td>
+        <td class="code">${esc(c.code)}</td>
         <td class="num">${c.points_balance}</td>
         <td class="num">${c.points_lifetime}</td>
         <td class="num"><button class="ghost" style="padding:5px 10px;font-size:13px"

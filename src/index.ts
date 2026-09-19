@@ -381,6 +381,87 @@ app.get('/api/cassa/batches', async (c) =>
   c.json({ ok: true, batches: await listBatches(c.env.DB) }),
 );
 
+// ------------------------------------------------------- tessera smarrita
+
+/**
+ * Del cliente esce solo quel che serve a riconoscerlo sullo schermo della
+ * cassa. Email e consensi restano dove sono: non c'entrano niente con il
+ * ritrovare una tessera.
+ */
+const perSchermo = (c: Customer) => ({
+  code: c.code,
+  first_name: c.first_name,
+  last_name: c.last_name,
+  points_balance: c.points_balance,
+});
+
+/**
+ * "Ho perso il cartoncino": dal numero di telefono al cliente.
+ *
+ * Accetta anche un nome, perche' non tutti hanno lasciato il numero - da
+ * quando le tessere si attivano dal telefono del cliente, il telefono e'
+ * facoltativo e qualcuno lo salta.
+ *
+ * Restituisce sempre un ELENCO, anche di uno solo: in una famiglia lo stesso
+ * numero copre piu' tessere, e scegliere la persona sbagliata significa
+ * mostrare a un cliente i punti di un altro.
+ */
+app.get('/api/cassa/smarrita', async (c) => {
+  const parsed = parseInput(c.req.query('q') ?? '');
+  if (parsed.type === 'empty') return c.json(fail('Scrivi il numero di telefono del cliente'), 400);
+
+  if (parsed.type === 'code') {
+    const code = normalizeCode(parsed.value);
+    const card = isValidCode(code) ? await findByCode(c.env.DB, code) : null;
+    if (!card?.activated_at) return c.json(fail('Tessera non trovata'), 404);
+    return c.json({ ok: true, clienti: [perSchermo(card)] });
+  }
+
+  const matches = await searchCustomers(
+    c.env.DB,
+    parsed.type === 'phone' ? { phone: parsed.value } : { name: parsed.value },
+  );
+  if (matches.length === 0) {
+    return c.json(
+      fail(
+        parsed.type === 'phone'
+          ? 'Nessun cliente con questo numero. Prova col nome.'
+          : 'Nessun cliente con questo nome.',
+      ),
+      404,
+    );
+  }
+  return c.json({ ok: true, clienti: matches.map(perSchermo) });
+});
+
+/**
+ * Il QR della tessera, da far inquadrare dallo schermo della cassa.
+ *
+ * Qui il giro funziona - a differenza del pass Apple, dove le istruzioni
+ * dicono di inquadrare il cartoncino e non lo schermo: li' e' il cliente a
+ * dover inquadrare, e nessuno puo' inquadrare il proprio telefono col
+ * proprio telefono. Da uno schermo diverso, invece, si puo'.
+ *
+ * Sta sotto /api/cassa/ e quindi dietro sessione: il QR porta al saldo di una
+ * persona, e non deve bastare indovinare un codice per vederselo comparire.
+ */
+app.get('/api/cassa/qr/:code', async (c) => {
+  const code = normalizeCode(c.req.param('code'));
+  if (!isValidCode(code)) return c.text('Codice tessera non valido', 404);
+
+  const card = await findByCode(c.env.DB, code);
+  if (!card) return c.text('Tessera non trovata', 404);
+
+  const url = `${new URL(c.req.url).origin}/c/${card.code}`;
+  return new Response(qrSvg(url, { size: 260 }), {
+    headers: {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      // il QR e' di una persona: non deve restare in nessuna cache
+      'Cache-Control': 'no-store',
+    },
+  });
+});
+
 /** Consegna della tessera: da vergine a intestata. */
 app.post('/api/cassa/activate', async (c) => {
   const body = await c.req.json<{

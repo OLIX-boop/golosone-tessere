@@ -177,11 +177,35 @@
       </div>
     </div>
 
+    <!-- Tessera smarrita: dal numero di telefono al QR da far inquadrare -->
+    <div class="card">
+      <h2>Tessera smarrita</h2>
+      <p class="hint">Il cliente ha perso il cartoncino: cerca il suo numero e fagli inquadrare
+         il QR qui sotto. Ritrova i suoi punti e può salvarsi la tessera nel telefono.</p>
+      <form class="row" id="lostForm" style="margin-top:14px">
+        <div class="grow"><input id="lostInput" inputmode="tel" autocomplete="off"
+             placeholder="Numero di telefono (o nome)"></div>
+        <button class="primary" id="lostBtn" type="submit">Cerca</button>
+      </form>
+
+      <ul class="rewards" id="lostList" hidden style="margin-top:14px"></ul>
+
+      <div id="lostQr" hidden style="margin-top:18px;text-align:center">
+        <h2 id="lostName" style="margin:0"></h2>
+        <p class="code" id="lostCode" style="margin:.25em 0 0"></p>
+        <img id="lostImg" width="240" height="240" alt="Codice QR della tessera"
+             style="display:block;margin:14px auto 0;background:#fff;border-radius:12px;padding:10px">
+        <p class="hint">Falla inquadrare al cliente con la fotocamera del telefono.</p>
+        <button class="ghost" id="lostClose" style="margin-top:8px">Chiudi</button>
+      </div>
+    </div>
+
     <!-- Scorta di tessere da stampare -->
     <div class="card">
       <h2>Tessere da stampare</h2>
-      <p class="hint">Le tessere si stampano prima e stanno in una scatola alla cassa:
-         si consegnano già pronte e si attivano scansionandole.</p>
+      <p class="hint">Le tessere si stampano prima e stanno in una scatola alla cassa.
+         Si consegnano così come sono: è il cliente ad attivarle, inquadrando il QR
+         col proprio telefono.</p>
       <div class="row" style="margin-top:14px">
         <input id="batchCount" inputmode="numeric" value="20" style="max-width:110px">
         <button class="primary" id="batchBtn">Crea lotto</button>
@@ -193,6 +217,14 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+/**
+ * Il nome del cliente lo scrive il CLIENTE, dal proprio telefono, da quando
+ * le tessere si attivano col QR. Qui finisce dentro innerHTML: senza questa
+ * funzione, un nome come <img src=x onerror=...> verrebbe eseguito dentro un
+ * pannello gia' sbloccato, che e' il posto peggiore.
+ */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const state = { loggedIn: false, customer: null, lastTx: null, rewards: [], maxPoints: 20 };
 const plural = (n) => (Math.abs(n) === 1 ? 'punto' : 'punti');
 
@@ -328,8 +360,8 @@ function showPicker(list) {
   $('custView').hidden = true;
   $('pickView').hidden = false;
   $('pickList').innerHTML = list
-    .map((c) => `<li><span>${c.first_name} ${c.last_name || ''}<br><span class="code">${c.code}</span></span>
-                 <button class="primary" data-code="${c.code}">Scegli</button></li>`)
+    .map((c) => `<li><span>${esc(c.first_name)} ${esc(c.last_name || '')}<br><span class="code">${esc(c.code)}</span></span>
+                 <button class="primary" data-code="${esc(c.code)}">Scegli</button></li>`)
     .join('');
   $('pickList').querySelectorAll('button').forEach((b) => {
     b.onclick = async () => {
@@ -532,6 +564,56 @@ document.addEventListener('click', (e) => {
 });
 
 boot().catch((e) => banner('Avvio fallito: ' + e.message, 'err', 0));
+
+/* ------------------------------------------------- Tessera smarrita ------ */
+
+function lostReset() {
+  $('lostQr').hidden = true;
+  $('lostList').hidden = true;
+  $('lostList').innerHTML = '';
+}
+
+function lostMostra(cliente) {
+  $('lostList').hidden = true;
+  $('lostName').textContent = [cliente.first_name, cliente.last_name].filter(Boolean).join(' ');
+  $('lostCode').textContent = cliente.code;
+  // Il parametro non serve al server ma al browser: senza, riaprendo la stessa
+  // tessera mostrerebbe l'immagine tenuta in memoria invece di richiederla.
+  $('lostImg').src = '/api/cassa/qr/' + encodeURIComponent(cliente.code) + '?t=' + Date.now();
+  $('lostQr').hidden = false;
+}
+
+$('lostForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = $('lostInput').value.trim();
+  if (!q) return;
+
+  lostReset();
+  $('lostBtn').disabled = true;
+  try {
+    const r = await api('/api/cassa/smarrita?q=' + encodeURIComponent(q));
+    if (r.clienti.length === 1) { lostMostra(r.clienti[0]); return; }
+
+    // Stesso numero, piu' tessere: in una famiglia capita. Si sceglie, perche'
+    // indovinare vorrebbe dire mostrare a un cliente i punti di un altro.
+    $('lostList').innerHTML = r.clienti
+      .map((c, i) => `<li><span>${esc([c.first_name, c.last_name].filter(Boolean).join(' '))}
+                       <br><span class="code">${esc(c.code)}</span></span>
+                      <button class="primary" data-i="${i}">Mostra QR</button></li>`)
+      .join('');
+    $('lostList').querySelectorAll('button').forEach((b) => {
+      b.onclick = () => lostMostra(r.clienti[b.dataset.i]);
+    });
+    $('lostList').hidden = false;
+  } catch (err) {
+    banner(err.message, 'err');
+  } finally {
+    $('lostBtn').disabled = false;
+  }
+});
+
+$('lostClose').onclick = () => { lostReset(); $('lostInput').value = ''; };
+
 </script>
 </body>
 </html>
