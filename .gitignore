@@ -1,5 +1,39 @@
 node_modules/
 .wrangler/
-.dev.vars
 dist/
 *.log
+
+# ---- Segreti: niente di tutto questo deve finire su GitHub ----
+# Variabili locali del Worker (contengono la chiave del service account)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# Chiavi Google: il JSON del service account e qualunque chiave sciolta.
+# Con quel file chiunque puo' emettere tessere a nome del negozio.
+service-account*.json
+*-service-account.json
+*.pem
+*.p12
+*.key
+
+# ---- Sessioni di Claude Code ----
+# I trascritti contengono per intero i comandi eseguiti e il loro output,
+# quindi anche le chiavi incollate durante il lavoro: si trasferiscono a mano
+# fra i propri computer, non attraverso un repository pubblico.
+*.jsonl
+.claude/
+
+# ---- Database locali ----
+*.sqlite
+*.sqlite3
+*.db
+
+# ---- Sistema ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
