@@ -8,8 +8,12 @@
   // I file statici (pannello cassa) vengono serviti direttamente dalla CDN.
   // Le rotte che non corrispondono a un file finiscono al Worker: e' cosi'
   // che /api/* e /c/:codice arrivano al codice.
+  // Il binding serve al pass Apple: le immagini finiscono DENTRO il .pkpass,
+  // quindi al codice non basta che la CDN le serva al browser, ne servono i
+  // byte. Leggerli da qui evita una richiesta di rete verso noi stessi.
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    "binding": "ASSETS"
   },
 
   "d1_databases": [

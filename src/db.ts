@@ -4,6 +4,16 @@ export type Env = {
   DB: D1Database;
   /** JSON del service account Google, come segreto del Worker (mai in database) */
   GOOGLE_WALLET_SA?: string;
+  /** Certificato del Pass Type ID Apple con la sua chiave, idem: mai in database */
+  APPLE_WALLET_CERT?: string;
+  /**
+   * I file di public/ visti dal codice.
+   *
+   * Servono le immagini da mettere DENTRO il .pkpass: la CDN le serve gia'
+   * al browser, ma qui ne servono i byte, e leggerli dal binding evita di
+   * uscire in rete verso noi stessi.
+   */
+  ASSETS?: Fetcher;
 };
 
 export type Customer = {
@@ -602,4 +612,112 @@ export async function listAllRewards(db: D1Database, storeId = 1) {
     .bind(storeId)
     .all<{ id: number; name: string; description: string | null; points_cost: number; active: number }>();
   return results;
+}
+
+// ============================================================= pass Apple
+
+/**
+ * Registra un pass su un telefono.
+ *
+ * Il token di push si riscrive sempre: Apple lo cambia nel tempo, e tenersi
+ * quello vecchio significa mandare notifiche nel vuoto senza accorgersene.
+ */
+export async function registerAppleDevice(
+  db: D1Database,
+  deviceLibraryId: string,
+  pushToken: string,
+  serialNumber: string,
+): Promise<'creata' | 'gia-presente'> {
+  await db
+    .prepare(
+      `INSERT INTO apple_devices (device_library_id, push_token) VALUES (?, ?)
+         ON CONFLICT(device_library_id) DO UPDATE SET push_token = excluded.push_token`,
+    )
+    .bind(deviceLibraryId, pushToken)
+    .run();
+
+  const esisteva = await db
+    .prepare('SELECT 1 AS ok FROM apple_registrations WHERE device_library_id = ? AND serial_number = ?')
+    .bind(deviceLibraryId, serialNumber)
+    .first<{ ok: number }>();
+  if (esisteva) return 'gia-presente';
+
+  await db
+    .prepare('INSERT INTO apple_registrations (device_library_id, serial_number) VALUES (?, ?)')
+    .bind(deviceLibraryId, serialNumber)
+    .run();
+  return 'creata';
+}
+
+/** Il telefono non vuole piu' quel pass. Se non gliene resta nessuno, sparisce anche il dispositivo. */
+export async function unregisterAppleDevice(
+  db: D1Database,
+  deviceLibraryId: string,
+  serialNumber: string,
+): Promise<void> {
+  await db
+    .prepare('DELETE FROM apple_registrations WHERE device_library_id = ? AND serial_number = ?')
+    .bind(deviceLibraryId, serialNumber)
+    .run();
+  await db
+    .prepare(
+      `DELETE FROM apple_devices WHERE device_library_id = ?
+        AND NOT EXISTS (SELECT 1 FROM apple_registrations WHERE device_library_id = ?)`,
+    )
+    .bind(deviceLibraryId, deviceLibraryId)
+    .run();
+}
+
+/**
+ * I pass di questo telefono cambiati dopo `since`.
+ *
+ * "Quando e' cambiata" una tessera non e' un campo: si ricava dal registro,
+ * che e' append-only e quindi sa sempre dire quando e' successo l'ultimo
+ * movimento. L'annullo conta come cambiamento, altrimenti un pass annullato
+ * resterebbe col saldo vecchio nel telefono.
+ */
+export async function appleUpdatedSerials(
+  db: D1Database,
+  deviceLibraryId: string,
+  since: number | null,
+): Promise<{ serials: string[]; lastUpdated: number }> {
+  const { results } = await db
+    .prepare(
+      `SELECT r.serial_number AS code,
+              MAX(
+                COALESCE(c.activated_at, 0),
+                COALESCE((SELECT MAX(COALESCE(t.voided_at, t.created_at))
+                            FROM transactions t WHERE t.customer_id = c.id), 0)
+              ) AS tag
+         FROM apple_registrations r
+         JOIN customers c ON c.code = r.serial_number
+        WHERE r.device_library_id = ?`,
+    )
+    .bind(deviceLibraryId)
+    .all<{ code: string; tag: number }>();
+
+  const serials = results.filter((r) => since === null || r.tag > since).map((r) => r.code);
+  const lastUpdated = results.reduce((max, r) => Math.max(max, r.tag), since ?? 0);
+  return { serials, lastUpdated };
+}
+
+/** I telefoni da svegliare quando cambia il saldo di una tessera. */
+export async function applePushTokens(db: D1Database, serialNumber: string): Promise<string[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT d.push_token FROM apple_registrations r
+         JOIN apple_devices d ON d.device_library_id = r.device_library_id
+        WHERE r.serial_number = ?`,
+    )
+    .bind(serialNumber)
+    .all<{ push_token: string }>();
+  return results.map((r) => r.push_token);
+}
+
+/** Toglie i dispositivi che APNs non riconosce piu': le registrazioni cadono con loro. */
+export async function forgetApplePushTokens(db: D1Database, tokens: string[]): Promise<void> {
+  for (const t of tokens) {
+    await db.prepare('DELETE FROM apple_registrations WHERE device_library_id IN (SELECT device_library_id FROM apple_devices WHERE push_token = ?)').bind(t).run();
+    await db.prepare('DELETE FROM apple_devices WHERE push_token = ?').bind(t).run();
+  }
 }

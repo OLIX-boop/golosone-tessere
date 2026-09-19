@@ -6,8 +6,9 @@ Nessuna scansione di scontrini, nessun importo registrato.
 **In produzione** su Cloudflare Workers. Tutto sta dentro un solo Worker:
 TypeScript con [Hono](https://hono.dev/) per le rotte, [D1](https://developers.cloudflare.com/d1/)
 (SQLite) per i dati, i file statici serviti dalla CDN, e l'integrazione con
-Google Wallet per la tessera nel telefono. Nessun server da amministrare,
-nessun costo fisso: sta interamente nei piani gratuiti.
+Google Wallet e Apple Wallet per la tessera nel telefono. Nessun server da
+amministrare e nessun costo fisso: l'unica spesa e' l'account sviluppatore
+Apple, senza il quale il pass su iPhone non si puo' firmare.
 
 ## Struttura
 
@@ -20,21 +21,29 @@ nessun costo fisso: sta interamente nei piani gratuiti.
 | `src/qr.ts` | QR della tessera, costruito dall'origine della richiesta |
 | `src/db.ts` | Query D1 |
 | `src/google-wallet.ts` | Classe e oggetto del pass, firma JWT, riallineamento del saldo |
-| `migrations/` | Schema: `0001` tabelle, `0002` premio iniziale, `0003` sessione titolare |
-| `public/` | Pannello cassa, pannello titolare, CSS, logo servito a Google |
-| `scripts/` | Caricamento della chiave Wallet, generazione del logo segnaposto |
+| `src/apple-wallet.ts` | Costruzione del `.pkpass`, manifesto, token dei pass |
+| `src/pkcs7.ts` | Firma CMS del manifesto, scritta a mano |
+| `src/zip.ts` | Archivio ZIP: un `.pkpass` e' uno ZIP |
+| `src/apns.ts` | Notifica che sveglia i pass Apple |
+| `src/apple-wwdr.ts` | Intermedio Apple, pubblico: sta qui per non pesare sul segreto |
+| `migrations/` | Schema: `0001` tabelle, `0002` premio iniziale, `0003` sessione titolare, `0004` pass Apple |
+| `public/` | Pannello cassa, pannello titolare, CSS, logo e icona serviti ai due Wallet |
+| `assets/` | L'originale del logo: non viene servito, e' la sorgente delle immagini |
+| `scripts/` | Caricamento delle chiavi Wallet, immagini per i due Wallet |
 | `test/` | Test su punti, codici, autenticazione e pass |
 
 ## Come e messo insieme
 
-Tre superfici, un solo dato condiviso:
+Superfici diverse, un solo dato condiviso:
 
 | Cosa | Dove | Chi la usa |
 |---|---|---|
 | Pannello cassa | `/` | operatore, nel browser del PC cassa |
 | Pannello titolare | `/titolare` | titolare, con un PIN proprio |
 | Salva nel telefono | `/c/CODICE/wallet` | il cliente, da Android |
+| Salva nel telefono | `/c/CODICE/apple` | il cliente, da iPhone |
 | Pagina cliente | `/c/CODICE` | chiunque abbia il link, sola lettura |
+| Aggiornamento pass | `/wallet-apple/v1/*` | l'iPhone del cliente, non una persona |
 | API | `/api/*` | le due sopra |
 
 Il **QR sulla tessera contiene l'URL della pagina cliente**, e serve a due cose
@@ -149,16 +158,17 @@ npm test           # punti, codici, autenticazione, pass
 npm run typecheck
 ```
 
-> `db:local` applica le tre migrazioni in fila ed e' pensato per un database
-> **nuovo**: la `0002` inserisce il premio e la `0003` aggiunge una colonna,
-> quindi rilanciarlo su un database gia' popolato duplica il premio e fallisce
-> sull'`ALTER TABLE`. Per ripartire pulito basta cancellare `.wrangler/`.
+> `db:local` applica le quattro migrazioni in fila ed e' pensato per un
+> database **nuovo**: la `0002` inserisce il premio e la `0003` aggiunge una
+> colonna, quindi rilanciarlo su un database gia' popolato duplica il premio e
+> fallisce sull'`ALTER TABLE`. Per ripartire pulito basta cancellare
+> `.wrangler/`.
 
 ## Messa in produzione
 
 ```bash
 npx wrangler d1 create tessere        # copia l'id in wrangler.jsonc
-npm run db:remote                     # le tre migrazioni sul database vero
+npm run db:remote                     # le quattro migrazioni sul database vero
 npx wrangler deploy
 ```
 
@@ -166,19 +176,27 @@ Vale lo stesso avvertimento di sopra: `db:remote` serve **una volta sola**, alla
 creazione del database. Una migrazione successiva si applica da sola:
 
 ```bash
-npx wrangler d1 execute tessere --remote --file=./migrations/0004_nuova.sql
+npx wrangler d1 execute tessere --remote --file=./migrations/0005_nuova.sql
 ```
 
-L'unico segreto da impostare e' la chiave Google Wallet, e ha il suo script
+> Il database di produzione esiste da prima della `0004`: quella va applicata
+> **da sola**, con il comando qui sopra, e non rilanciando `db:remote`.
+
+```bash
+npx wrangler d1 execute tessere --remote --file=./migrations/0004_apple_wallet.sql
+```
+
+I segreti da impostare sono due, uno per Wallet, e ognuno ha il suo script
 dedicato (vedi *La tessera nel telefono*):
 
 ```bash
 npm run wallet:chiave -- "percorso/del/service-account.json"
+npm run apple:certificato -- --chiave pass.key --certificato pass.cer
 ```
 
-Non ci sono altri segreti: il PIN vive come hash in `settings`, l'id del
-database sta in `wrangler.jsonc`, e l'ID emittente Wallet si incolla dal
-pannello titolare.
+Non ce ne sono altri: il PIN vive come hash in `settings`, l'id del database
+sta in `wrangler.jsonc`, l'ID emittente Google si incolla dal pannello
+titolare, e Pass Type ID e Team ID di Apple stanno gia' dentro il certificato.
 
 ## Parametri
 
@@ -190,6 +208,11 @@ Si cambiano in `settings` senza rideploy:
 | `max_points_per_tx` | `20` | tetto anti-errore: il 2 che diventa 22 |
 | `void_window_min` | `30` | minuti entro cui annullare un movimento |
 | `show_rewards_to_customer` | `1` | `0` lascia al cliente il solo saldo punti |
+
+`apple_auth_key` sta nella stessa tabella ma **non si tocca**: e' la chiave da
+cui si derivano i token dei pass gia' consegnati. Cambiarla li scollegherebbe
+tutti. Per questo non compare fra le chiavi modificabili dal pannello e non
+esce nemmeno dalla API delle impostazioni.
 
 ```bash
 npx wrangler d1 execute tessere --local --command "UPDATE settings SET value='15' WHERE key='max_points_per_tx'"
@@ -251,7 +274,9 @@ legge, lo schermo e' crepato, o il cliente detta il codice al telefono.
   blocco di una tessera persa o clonata. Bloccare non cancella: i punti restano
   e il registro pure, ma la tessera non e' piu' utilizzabile.
 - **Impostazioni** - nome negozio, tetto punti, finestra di annullo, traguardo
-  visibile al cliente, e il cambio del PIN di cassa.
+  visibile al cliente, il cambio del PIN di cassa, e lo stato dei due Wallet.
+  Quello di Apple ha tre stati e non due: attivo col push, attivo senza (il
+  cliente vede i punti nuovi solo tirando giu' il pass), o non configurato.
 
 Il POST delle impostazioni scrive **solo una lista chiusa di chiavi**: senza
 quel filtro basterebbe una richiesta con `access_pin_hash` per scavalcare il
@@ -298,23 +323,135 @@ puo' emettere pass solo verso account di prova. Per i clienti veri serve
 chiedere l'accesso alla pubblicazione - gratuito, ma con qualche giorno di
 attesa, quindi conviene avviare la richiesta presto.
 
-### Apple Wallet - statico, gratuito, niente da programmare
+### Apple Wallet - dinamico, a pagamento, tutto da firmare
 
-Da iOS 27 chiunque puo' creare un pass senza sviluppatore e senza certificato,
-ma la funzione e' **avviata solo dall'utente sul telefono**: nessun sito puo'
-innescarla, e il pass resta congelato al momento in cui viene creato.
+Fino all'acquisto dell'account sviluppatore qui non c'era codice: da iOS 27
+chiunque puo' creare un pass da solo, ma la funzione e' **avviata solo
+dall'utente sul telefono**, e il pass resta congelato al momento in cui viene
+creato. Quelle istruzioni restano sulla pagina cliente come ripiego, e
+compaiono solo finche' il certificato non e' configurato.
 
-Per questo qui non c'e' integrazione ma istruzioni sulla pagina cliente. Un
-dettaglio che non si puo' sbagliare: dicono di inquadrare **il cartoncino**, non
-lo schermo, perche' nessuno puo' inquadrare il proprio telefono col proprio
-telefono.
+Con l'account, il pass diventa un file che **firmiamo noi**, e si aggiorna da
+solo come quello di Google. I due sistemi restano pero' asimmetrici nel modo
+in cui aggiornano, e conviene saperlo:
 
-Il pass su iPhone serve quindi a ritrovare il codice, non a leggere il saldo:
-per quello il cliente torna sulla pagina.
+| | Google | Apple |
+|---|---|---|
+| Dove sta il pass | sui server di Google | nel telefono |
+| Aggiornare vuol dire | riscrivere l'oggetto da Google | svegliare il telefono, che riscarica |
+| Se il servizio e' giu' | il saldo resta indietro | il saldo resta indietro |
+| Si prova in locale | no, serve il dominio vero | il pass si', la notifica no |
 
-I 99 euro l'anno dell'Apple Developer Program comprerebbero il saldo che si
-aggiorna e il pulsante sul sito. Per una pasticceria che parte non valgono;
-l'architettura non cambia se un giorno li si volesse spendere.
+**Un `.pkpass` e' uno ZIP** con dentro `pass.json`, le immagini, un manifesto
+con l'impronta di ogni file, e la firma CMS del manifesto. Serve saperli
+produrre entrambi dentro un Worker, dove non esistono ne' `zip` ne' `openssl`:
+da qui `src/zip.ts` e `src/pkcs7.ts`.
+
+La firma e' scritta a mano, come gia' il JWT di Google. Le librerie PKCS#7 per
+JavaScript sono grosse, generiche e pensate per Node, e qui serve un caso solo
+su tre algoritmi fissi. Il prezzo di questa scelta lo pagano i test: **una
+firma sbagliata iOS la rifiuta senza dire una parola**, quindi i test non
+guardano la forma, fanno verificare la firma a OpenSSL.
+
+> Se un giorno quel test cominciasse a fallire, guarda il comando prima del
+> codice: `openssl cms -verify` **senza `-binary`** riscrive gli a capo del
+> contenuto prima di confrontarlo, e una firma giusta risulta sbagliata.
+
+### Quel che non si puo' piu' cambiare
+
+Un pass sa aggiornarsi solo se contiene `webServiceURL` e
+`authenticationToken` **dal momento in cui viene creato**. Non sono
+aggiungibili dopo: i pass gia' nei telefoni resterebbero congelati per sempre
+e andrebbero rifatti uno per uno dai clienti.
+
+Per la stessa ragione il prefisso delle rotte (`/wallet-apple`) e' scolpito
+dentro ogni pass emesso: cambiarlo scollegherebbe tutti quelli gia' consegnati.
+
+Il token di autenticazione si deriva da `apple_auth_key`, che sta in
+`settings`, e **non dal certificato**. I certificati Apple scadono dopo un
+anno: legarli avrebbe significato che al primo rinnovo tutti i pass gia'
+consegnati avrebbero smesso di aggiornarsi, e ce ne saremmo accorti dal
+reclamo di un cliente.
+
+### Un segreto di Worker si ferma a 5,1 kB
+
+Ci siamo sbattuti contro: certificato, chiave privata, chiave del push e
+intermedio Apple, impacchettati come faceva il primo tentativo, fanno **8 kB** e
+Cloudflare li rifiuta.
+
+Due sprechi, tolti tutti e due:
+
+- **la doppia codifica.** Un PEM *e' gia'* base64. Ricodificare in base64 il
+  JSON che lo contiene lo gonfia di un terzo senza guadagnare niente, perche'
+  qui i pezzi viaggiano senza intestazioni e senza a capo: non c'e' piu' niente
+  che una variabile d'ambiente possa rovinare. Il segreto e' JSON semplice.
+- **l'intermedio Apple.** E' un certificato **pubblico**, scaricabile da
+  chiunque: non ha motivo di occupare lo spazio riservato ai segreti. Sta in
+  `src/apple-wwdr.ts`, e il segreto puo' comunque portarne uno suo (`--wwdr`)
+  che ha la precedenza, per il giorno in cui Apple cambiera' intermedio.
+
+Risultato: **4 kB**, con un kilobyte di margine. Lo script misura il pacchetto
+e si ferma prima di provarci, invece di far sbagliare Cloudflare.
+
+### Il push funziona solo in produzione
+
+Lo dice Apple, e si aggiunge una seconda ragione tecnica: APNs parla **solo
+HTTP/2**, e il runtime locale dei Worker non lo fa. Sulla rete Cloudflare
+invece si', quindi `wrangler dev` non e' il posto dove diagnosticare una
+notifica che non arriva.
+
+L'autenticazione ad APNs e' **a token (`.p8`) e non a certificato**. Non e' un
+dettaglio di gusto: quella a certificato richiede una connessione TLS con
+certificato cliente, che dentro un Worker si fa solo con il binding mTLS di
+Cloudflare. Col token basta una `fetch` normale.
+
+Come per Google, il fallimento e' silenzioso: la cassa non si ferma perche'
+Apple non risponde. Nel peggiore dei casi il pass resta indietro finche' il
+cliente non lo tira giu' a mano dal telefono.
+
+### I passi per configurare Apple
+
+Il giro dei certificati Apple si documenta ovunque partendo dal Portachiavi di
+un Mac. Da Windows si fa tutto con OpenSSL, che Git Bash ha gia' dentro.
+
+**1. La chiave e la richiesta di firma**, da dentro la cartella del progetto:
+
+```bash
+openssl genrsa -out pass.key 2048
+MSYS2_ARG_CONV_EXCL="*" openssl req -new -key pass.key -out pass.csr -subj "/emailAddress=TUA@EMAIL/CN=Tessere/C=IT"
+```
+
+> `MSYS2_ARG_CONV_EXCL="*"` non e' superstizione: senza, Git Bash scambia
+> `/emailAddress=...` per un percorso di Windows e lo riscrive, e OpenSSL
+> fallisce con un errore che non c'entra niente.
+
+`pass.key` e' la chiave privata. Non finisce nel repository (il `.gitignore`
+esclude `*.key`) ma **va conservata**: senza, il certificato che Apple ti
+restituisce non vale niente e il giro va rifatto.
+
+**2. Il certificato**, su developer.apple.com: *Certificates, Identifiers &
+Profiles* -> *Identifiers* -> **Pass Type IDs** -> crea un identificativo
+(`pass.` seguito da un nome tuo, per esempio `pass.it.pasticceria.tessere`),
+poi carica `pass.csr` e riscarica il certificato come `pass.cer`.
+
+**3. La chiave per le notifiche** (facoltativa, ma senza non c'e' il push):
+*Keys* -> nuova chiave con **Apple Push Notifications service (APNs)**
+abilitato. Si scarica **una volta sola**, come `AuthKey_XXXXXXXXXX.p8`.
+
+**4. Il caricamento:**
+
+```bash
+npm run apple:certificato -- --chiave pass.key --certificato pass.cer --apns AuthKey_XXXXXXXXXX.p8
+```
+
+Lo script controlla prima di caricare: che la chiave corrisponda davvero a quel
+certificato, che sia un Pass Type ID e non un altro certificato Apple, e che
+non sia gia' scaduto. Pass Type ID e Team ID non si chiedono perche' stanno
+scritti dentro il certificato, e leggerli da li' toglie di mezzo l'unico modo
+di farli discordare.
+
+Non c'e' altro da incollare da nessuna parte: il pannello titolare dovrebbe
+gia' dire *Attivo*.
 
 ### Se Google non risponde
 
@@ -324,23 +461,66 @@ cassa risponde in **44 millisecondi** e i fallimenti restano nei log. Nel
 peggiore dei casi il pass resta indietro finche' il cliente non riapre la sua
 pagina.
 
-### Il logo e obbligatorio
+### Le immagini: uno script, perche' i due Wallet le vogliono incompatibili
 
-Google rifiuta la classe senza logo: *"LoyaltyClass cannot be created without a
-program logo"*. L'immagine deve stare su un indirizzo HTTPS pubblico, quindi la
-serve il Worker stesso da `public/logo.png`.
-
-Quello attuale e' un segnaposto generato. Per metterci il logo vero basta
-sostituire il file con un PNG quadrato di almeno 660x660, **sfondo pieno e non
-trasparente** perche' Google lo mostra su fondi di colore variabile. Per
-rigenerare il segnaposto dopo aver cambiato i colori:
+L'originale del logo sta in `assets/logo-golosone.png` e non viene mai servito:
+tutto il resto si ricava da li'.
 
 ```bash
-npm run logo
+npm run grafica
 ```
 
-Il logo cambia solo alla creazione della classe. Se lo sostituisci dopo,
-la classe esistente va aggiornata a mano dalla console Google.
+Serve uno script perche' le misure non sono negoziabili e vanno in due
+direzioni opposte:
+
+| | Forma | Perche' |
+|---|---|---|
+| Google | quadrato, almeno 660x660, **sfondo pieno** | lo mostra su fondi di colore variabile: un PNG trasparente diventa illeggibile, e senza logo rifiuta proprio la classe (*"LoyaltyClass cannot be created without a program logo"*) |
+| Apple, logo | **largo**, 160x50 punti | dargli un quadrato e' l'errore che fa sembrare la tessera vuota: iOS lo rimpicciolisce finche' entra in 50 punti d'altezza, e resta un francobollo in un angolo |
+| Apple, icona | 29x29 punti | obbligatoria: senza, iPhone rifiuta il pass e non dice perche' |
+| Apple, striscia | 375x123 punti | facoltativa: e' la fascia dietro il numero dei punti. Oggi **non se ne manda nessuna**, vedi qui sotto |
+
+### Tre stili, e perche' non si puo' fare di meglio
+
+Nel formato Apple il colore dei testi e' **uno solo per tutta la tessera**
+(`foregroundColor`), e vale sia sopra la striscia sia sotto, sul fondo. Non
+esiste quindi la fascia scura col numero chiaro e i campi scuri sul fondo
+chiaro: o la tessera e' tutta chiara, o e' tutta scura. Da qui tre stili
+interi invece di una manopola per la sola striscia.
+
+```bash
+npm run grafica -- --stile scuro
+```
+
+| Stile | Com'e' |
+|---|---|
+| `minimo` | **quello in uso**: fondo bianco caldo, testi bordeaux, nessuna striscia |
+| `chiaro` | come sopra, ma con la fascia rosa cipria dal bordo smerlato |
+| `scuro` | fondo bordeaux pieno, logo e testi in crema |
+
+Lo stile predefinito e' quello del negozio: rilanciare lo script senza
+argomenti riproduce quel che gira in produzione, non un altro stile che poi
+finirebbe dentro i pass senza che nessuno se ne accorga.
+
+Il Worker non sa nulla di stili: mette nel pacchetto le immagini che trova in
+`public/pass/` e salta quelle che mancano. Passare da uno stile all'altro e'
+quindi solo una questione di quali file esistono - tranne i colori dei testi,
+che vanno riportati a mano in `src/apple-wallet.ts`. Lo script li stampa a
+fine esecuzione, pronti da incollare.
+
+Ogni immagine Apple esce in tre densita' (1x, 2x, 3x) e finisce in
+`public/pass/` **gia' con il nome che Apple si aspetta**, cosi' il Worker la
+copia dentro il pacchetto senza rinominare niente.
+
+I colori non sono scelti a gusto: l'inchiostro e' il bordeaux misurato sui
+pixel del logo (`#6f3233`). Stanno scritti in due posti - in
+`scripts/genera-grafica.mjs`, che disegna la striscia, e in
+`src/apple-wallet.ts`, che colora i testi del pass. **Cambiarne uno solo si
+vede**: i testi non tonerebbero piu' con la fascia.
+
+Il logo di Google cambia solo alla creazione della classe. Se lo sostituisci
+dopo, la classe esistente va aggiornata a mano dalla console Google: il
+riallineamento automatico tocca nome e logo, ma non i colori.
 
 ## Riprendere il lavoro su un altro computer
 
@@ -394,3 +574,9 @@ apposta: si trasferisce a mano, con una chiavetta o una cartella cloud privata.
 - [ ] Ristampa di un lotto, marcando le tessere sostituite
 - [ ] Chiedere a Google l'accesso alla pubblicazione (finche' l'emittente e'
       in modalita' demo, i pass funzionano solo per gli account di prova)
+- [ ] Provare il pass Apple su un iPhone vero, dopo il deploy: e' l'unica cosa
+      che i test non possono verificare da fermi
+- [ ] Segnare in calendario la scadenza del certificato Apple, **19 ottobre
+      2027**: quando scade il pulsante smette di funzionare, e va rifatto il
+      giro del portale. I pass gia' nei telefoni continuano ad aggiornarsi,
+      perche' i loro token non dipendono dal certificato

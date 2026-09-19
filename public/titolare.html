@@ -245,6 +245,13 @@
       </div>
 
       <div class="card">
+        <h2>Apple Wallet</h2>
+        <!-- Qui non c'e' niente da incollare: Pass Type ID e Team ID stanno
+             dentro il certificato, quindi non possono discordare. -->
+        <p class="hint" id="appleStato"></p>
+      </div>
+
+      <div class="card">
         <h2>PIN di cassa</h2>
         <p class="hint">Cambiandolo, tutte le casse aperte vengono disconnesse e dovranno
            rientrare col nuovo PIN.</p>
@@ -287,6 +294,9 @@ async function api(path, opts = {}) {
 async function boot() {
   const s = await api('/api/titolare/stato');
   stato.walletSegreto = s.walletSegreto;
+  stato.appleSegreto = s.appleSegreto;
+  stato.appleProblema = s.appleProblema;
+  stato.applePush = s.applePush;
   $('shopName').textContent = s.storeName;
   document.title = 'Titolare - ' + s.storeName;
 
@@ -573,6 +583,7 @@ async function caricaImpostazioni() {
   $('setShowRewards').checked = (impostazioni.show_rewards_to_customer ?? '1') !== '0';
   $('setIssuer').value = impostazioni.wallet_issuer_id ?? '';
   aggiornaStatoWallet(impostazioni.wallet_issuer_id);
+  aggiornaStatoApple();
 }
 
 /**
@@ -591,6 +602,25 @@ function aggiornaStatoWallet(issuer) {
     el.textContent = 'Manca la chiave del service account: wrangler secret put GOOGLE_WALLET_SA';
   } else {
     el.textContent = 'Manca l ID emittente qui sotto.';
+  }
+}
+
+/**
+ * Apple ha tre stati e non due: configurato e con il push, configurato ma
+ * senza (il pass si aggiorna solo quando il cliente lo tira giu' a mano), o
+ * assente. Dire quale dei tre e' costa una riga e risparmia un'indagine.
+ */
+function aggiornaStatoApple() {
+  const el = $('appleStato');
+  if (!el) return;
+  if (!stato.appleSegreto) {
+    el.textContent = 'Non configurato. Il certificato si carica con: npm run apple:certificato';
+  } else if (stato.appleProblema) {
+    el.textContent = stato.appleProblema;
+  } else if (!stato.applePush) {
+    el.textContent = 'Attivo, ma senza notifiche: il cliente vede i punti nuovi solo tirando giu il pass. Per il push serve la chiave APNs.';
+  } else {
+    el.textContent = 'Attivo: il pulsante "Aggiungi ad Apple Wallet" compare ai clienti e i punti si aggiornano da soli.';
   }
 }
 
