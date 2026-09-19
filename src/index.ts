@@ -865,12 +865,12 @@ app.get('/stampa/:batch', requireSession, async (c) => {
   @page { size: A4; margin: 10mm; }
   * { box-sizing: border-box; }
   body { margin:0; font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-         background:#f4f1ec; color:#2b2420; }
+         background:#f5f0ee; color:#2a2124; }
 
-  .barra { padding:16px; text-align:center; background:#fff; border-bottom:1px solid #e5ded5; }
-  .barra button { font:inherit; font-weight:600; background:#8c4a2f; color:#fff;
+  .barra { padding:16px; text-align:center; background:#fff; border-bottom:1px solid #e6dfe0; }
+  .barra button { font:inherit; font-weight:600; background:#56343c; color:#fff;
                   border:0; border-radius:10px; padding:12px 22px; cursor:pointer; }
-  .barra p { margin:.5em 0 0; color:#8a7f76; font-size:14px; }
+  .barra p { margin:.5em 0 0; color:#7a6a71; font-size:14px; }
 
   .foglio { width:190mm; margin:14px auto; display:grid;
             grid-template-columns:repeat(2, 85mm); grid-auto-rows:55mm;
@@ -974,6 +974,7 @@ function customerPage(data: {
   const head = `<!doctype html><html lang="it"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(data.storeName)} - La tua tessera</title>
+<link rel="stylesheet" href="/tema.css">
 <link rel="stylesheet" href="/cliente.css"></head><body>`;
 
   if (data.notFound || !data.customer) {

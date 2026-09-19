@@ -162,7 +162,8 @@ function classBody(c: WalletConfig) {
     issuerName: c.storeName,
     programName: 'Tessera punti',
     reviewStatus: 'UNDER_REVIEW',
-    hexBackgroundColor: '#8c4a2f',
+    // lo stesso prugna del logo e della tessera Apple (public/tema.css)
+    hexBackgroundColor: '#56343c',
     countryCode: 'IT',
     // Obbligatorio: senza, Google rifiuta la classe con
     // "LoyaltyClass cannot be created without a program logo".
@@ -239,10 +240,12 @@ export async function ensureClass(c: WalletConfig): Promise<void> {
   // senza motivo.
   const corrente = (await letta.json()) as {
     issuerName?: string;
+    hexBackgroundColor?: string;
     programLogo?: { sourceUri?: { uri?: string } };
   };
   const allineata =
     corrente.issuerName === atteso.issuerName &&
+    corrente.hexBackgroundColor === atteso.hexBackgroundColor &&
     corrente.programLogo?.sourceUri?.uri === atteso.programLogo.sourceUri.uri;
   if (allineata) return;
 
@@ -251,6 +254,7 @@ export async function ensureClass(c: WalletConfig): Promise<void> {
     headers: testata,
     body: JSON.stringify({
       issuerName: atteso.issuerName,
+      hexBackgroundColor: atteso.hexBackgroundColor,
       programLogo: atteso.programLogo,
       reviewStatus: 'UNDER_REVIEW',
     }),

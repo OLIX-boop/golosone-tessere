@@ -1,12 +1,5 @@
-/* Pagina cliente: si apre dal QR, quindi e' pensata prima per il telefono. */
-:root{
-  --bg:#f4f1ec; --card:#fff; --ink:#2b2420; --muted:#8a7f76;
-  --line:#e5ded5; --accent:#8c4a2f; --ok:#2f7a4d; --ok-bg:#e8f5ed;
-}
-@media (prefers-color-scheme: dark){
-  :root{ --bg:#191513; --card:#241f1c; --ink:#f2ece6; --muted:#a6988c;
-         --line:#38302b; --accent:#d98b63; --ok:#7bc79a; --ok-bg:#1e3328; }
-}
+/* Pagina cliente: si apre dal QR, quindi e' pensata prima per il telefono.
+   I colori arrivano da tema.css, che la pagina carica prima di questo file. */
 *{box-sizing:border-box}
 body{
   margin:0;background:var(--bg);color:var(--ink);

@@ -4,26 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Titolare - Tessere punti</title>
+<link rel="stylesheet" href="/tema.css">
 <style>
-  :root{
-    --bg:#f4f1ec; --card:#fff; --ink:#2b2420; --ink2:#6b6058; --muted:#8a7f76;
-    --line:#e5ded5; --accent:#8c4a2f; --accent-ink:#fff;
-    --ok:#2f7a4d; --ok-bg:#e8f5ed; --err:#b3261e; --err-bg:#fdeceb;
-    /* Colore dei dati, separato da quello del marchio: il marrone della
-       pasticceria ha croma troppo bassa e come barra leggerebbe grigio.
-       Questo arancio e' validato su fondo chiaro E scuro. */
-    --dato:#d95926;
-    --griglia:#ece5dc;
-    --radius:14px;
-  }
-  /* Il tema scuro e' scelto, non ribaltato: stesso arancio, verificato
-     anche contro il fondo scuro. */
-  @media (prefers-color-scheme: dark){
-    :root{ --bg:#191513; --card:#241f1c; --ink:#f2ece6; --ink2:#c2b5a9; --muted:#a6988c;
-           --line:#38302b; --accent:#d98b63; --accent-ink:#2b2420;
-           --ok:#7bc79a; --ok-bg:#1e3328; --err:#f2b8b5; --err-bg:#3a1f1d;
-           --dato:#d95926; --griglia:#2f2825; }
-  }
+  /* La tavolozza sta in tema.css, caricato qui sopra. */
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
        font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;

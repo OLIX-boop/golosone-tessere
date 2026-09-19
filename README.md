@@ -28,6 +28,7 @@ Apple, senza il quale il pass su iPhone non si puo' firmare.
 | `src/apple-wwdr.ts` | Intermedio Apple, pubblico: sta qui per non pesare sul segreto |
 | `migrations/` | Schema: `0001` tabelle, `0002` premio iniziale, `0003` sessione titolare, `0004` pass Apple |
 | `public/` | Pannello cassa, pannello titolare, CSS, logo e icona serviti ai due Wallet |
+| `public/tema.css` | La tavolozza, in un posto solo: la caricano tutte e tre le superfici |
 | `assets/` | L'originale del logo: non viene servito, e' la sorgente delle immagini |
 | `scripts/` | Caricamento delle chiavi Wallet, immagini per i due Wallet |
 | `test/` | Test su punti, codici, autenticazione e pass |
@@ -512,11 +513,23 @@ Ogni immagine Apple esce in tre densita' (1x, 2x, 3x) e finisce in
 `public/pass/` **gia' con il nome che Apple si aspetta**, cosi' il Worker la
 copia dentro il pacchetto senza rinominare niente.
 
-I colori non sono scelti a gusto: l'inchiostro e' il bordeaux misurato sui
-pixel del logo (`#6f3233`). Stanno scritti in due posti - in
-`scripts/genera-grafica.mjs`, che disegna la striscia, e in
-`src/apple-wallet.ts`, che colora i testi del pass. **Cambiarne uno solo si
-vede**: i testi non tonerebbero piu' con la fascia.
+I colori non sono scelti a gusto: l'inchiostro e' il prugna misurato sui pixel
+pieni del logo, `#56343c`. Lo stesso colore vive in tre posti, e cambiarne uno
+solo si vede:
+
+| Dove | Cosa colora |
+|---|---|
+| `public/tema.css` | il sito: cassa, pannello titolare, pagina cliente |
+| `src/apple-wallet.ts` | i testi della tessera in Apple Wallet |
+| `scripts/genera-grafica.mjs` | la striscia, quando lo stile ne prevede una |
+
+Nel tema del sito ogni coppia testo/fondo e' verificata per contrasto (4,5:1
+per il testo, 3:1 per le barre del grafico). La pagina cliente si apre al sole
+davanti al banco, sullo schermo di chiunque: non e' pignoleria.
+
+Il colore dei **dati** nel grafico resta separato da quello del marchio, ed e'
+l'unico che non segue l'accento: il prugna ha croma troppo bassa e come barra
+leggerebbe grigio.
 
 Il logo di Google cambia solo alla creazione della classe. Se lo sostituisci
 dopo, la classe esistente va aggiornata a mano dalla console Google: il

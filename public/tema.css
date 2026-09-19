@@ -1,0 +1,49 @@
+/*
+ * Tavolozza unica delle tre superfici: cassa, pannello titolare, pagina
+ * cliente. Prima ognuna aveva la sua copia degli stessi colori, e cambiare il
+ * colore del marchio voleva dire ricordarsi di quattro file: bastava
+ * dimenticarne uno per avere due tonalita' diverse nello stesso negozio.
+ *
+ * L'accento e' il colore VERO del logo, misurato sui suoi pixel pieni:
+ * #56343c, un prugna scuro. E' lo stesso che finisce nei testi della tessera
+ * in Apple Wallet (src/apple-wallet.ts): se qui cambia, cambia anche li'.
+ *
+ * Ogni coppia testo/fondo e' verificata per contrasto: 4.5:1 per il testo,
+ * 3:1 per le barre del grafico. Non e' pignoleria - la pagina cliente si apre
+ * al sole, davanti al banco, sullo schermo di chiunque.
+ */
+:root{
+  --bg:#f5f0ee; --card:#fff;
+  --ink:#2a2124;        /* 15.6:1 sulla scheda */
+  --ink2:#61545a;
+  --muted:#7a6a71;      /* 5.1:1 sulla scheda, 4.5:1 sul fondo: il piu' chiaro che passa */
+  --line:#e6dfe0;
+  --accent:#56343c;     /* il prugna del logo */
+  --accent-ink:#fff;    /* 10.8:1 sopra l'accento */
+  --ok:#2f7a4d; --ok-bg:#e8f5ed;
+  --err:#b3261e; --err-bg:#fdeceb;
+
+  /* Colore dei DATI, tenuto separato da quello del marchio: il prugna ha
+     croma troppo bassa e come barra leggerebbe grigio. Questo arancio e'
+     validato su fondo chiaro E scuro, ed e' la ragione per cui non segue
+     l'accento quando l'accento cambia. */
+  --dato:#d95926;
+  --griglia:#ece5dc;
+
+  --radius:14px;
+}
+
+/* Il tema scuro e' scelto, non ribaltato: l'accento diventa un prugna chiaro
+   perche' quello scuro sul fondo scuro sparirebbe, mentre il colore dei dati
+   resta identico, essendo gia' verificato su entrambi i fondi. */
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#171315; --card:#221c1f;
+    --ink:#f1eaec; --ink2:#c3b3b8; --muted:#a3939a;
+    --line:#362c30;
+    --accent:#d9a3ae; --accent-ink:#2b2420;
+    --ok:#7bc79a; --ok-bg:#1e3328;
+    --err:#f2b8b5; --err-bg:#3a1f1d;
+    --dato:#d95926; --griglia:#2e2629;
+  }
+}
