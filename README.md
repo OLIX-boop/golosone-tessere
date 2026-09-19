@@ -3,6 +3,28 @@
 Raccolta punti per pasticceria. L'operatore assegna i punti a mano dalla cassa.
 Nessuna scansione di scontrini, nessun importo registrato.
 
+**In produzione** su Cloudflare Workers. Tutto sta dentro un solo Worker:
+TypeScript con [Hono](https://hono.dev/) per le rotte, [D1](https://developers.cloudflare.com/d1/)
+(SQLite) per i dati, i file statici serviti dalla CDN, e l'integrazione con
+Google Wallet per la tessera nel telefono. Nessun server da amministrare,
+nessun costo fisso: sta interamente nei piani gratuiti.
+
+## Struttura
+
+| Percorso | Cosa c'e' dentro |
+|---|---|
+| `src/index.ts` | Rotte HTTP: pannello, API, pagina cliente, foglio di stampa |
+| `src/auth.ts` | PIN, sessioni, blocco progressivo dopo i tentativi falliti |
+| `src/points.ts` | Assegnazione punti, tetto per movimento, annullo |
+| `src/codes.ts` | Alfabeto dei codici, generazione, parsing di quel che arriva dal lettore |
+| `src/qr.ts` | QR della tessera, costruito dall'origine della richiesta |
+| `src/db.ts` | Query D1 |
+| `src/google-wallet.ts` | Classe e oggetto del pass, firma JWT, riallineamento del saldo |
+| `migrations/` | Schema: `0001` tabelle, `0002` premio iniziale, `0003` sessione titolare |
+| `public/` | Pannello cassa, pannello titolare, CSS, logo servito a Google |
+| `scripts/` | Caricamento della chiave Wallet, generazione del logo segnaposto |
+| `test/` | Test su punti, codici, autenticazione e pass |
+
 ## Come e messo insieme
 
 Tre superfici, un solo dato condiviso:
@@ -110,27 +132,53 @@ battesimo: niente cognome, telefono o email.
 
 ## Sviluppo
 
+Serve **Node 21 o superiore** (i test usano i glob di `node --test`) e un
+account Cloudflare gratuito.
+
 ```bash
 npm install
-npm run db:local   # crea lo schema in locale
-npm run db:seed    # il premio
-npm run dev        # http://127.0.0.1:8787
+npx wrangler login    # solo la prima volta su una macchina nuova
+npm run db:local      # schema + premio iniziale, in locale
+npm run dev           # http://127.0.0.1:8787
 ```
 
 Al primo avvio il pannello chiede di scegliere il PIN del negozio.
 
 ```bash
-npm test           # validazione punti e parsing codici
+npm test           # punti, codici, autenticazione, pass
 npm run typecheck
 ```
+
+> `db:local` applica le tre migrazioni in fila ed e' pensato per un database
+> **nuovo**: la `0002` inserisce il premio e la `0003` aggiunge una colonna,
+> quindi rilanciarlo su un database gia' popolato duplica il premio e fallisce
+> sull'`ALTER TABLE`. Per ripartire pulito basta cancellare `.wrangler/`.
 
 ## Messa in produzione
 
 ```bash
 npx wrangler d1 create tessere        # copia l'id in wrangler.jsonc
-npm run db:remote                     # schema sul database vero
+npm run db:remote                     # le tre migrazioni sul database vero
 npx wrangler deploy
 ```
+
+Vale lo stesso avvertimento di sopra: `db:remote` serve **una volta sola**, alla
+creazione del database. Una migrazione successiva si applica da sola:
+
+```bash
+npx wrangler d1 execute tessere --remote --file=./migrations/0004_nuova.sql
+```
+
+L'unico segreto da impostare e' la chiave Google Wallet, e ha il suo script
+dedicato (vedi *La tessera nel telefono*):
+
+```bash
+npm run wallet:chiave -- "percorso/del/service-account.json"
+```
+
+Non ci sono altri segreti: il PIN vive come hash in `settings`, l'id del
+database sta in `wrangler.jsonc`, e l'ID emittente Wallet si incolla dal
+pannello titolare.
 
 ## Parametri
 
@@ -293,6 +341,53 @@ npm run logo
 
 Il logo cambia solo alla creazione della classe. Se lo sostituisci dopo,
 la classe esistente va aggiornata a mano dalla console Google.
+
+## Riprendere il lavoro su un altro computer
+
+Il codice si porta dietro con un `clone`; la conversazione con Claude Code, no.
+
+```bash
+git clone https://github.com/OLIX-boop/golosone-tessere.git
+cd golosone-tessere
+npm install
+npx wrangler login
+npm run db:local
+npm run dev
+```
+
+Il database locale non viaggia col repository (`.wrangler/` e' escluso): quello
+nuovo nasce vuoto, col premio iniziale e senza tessere. Il database di
+produzione resta uno solo, su Cloudflare, e i due non si parlano.
+
+### La sessione di Claude Code
+
+Claude Code tiene la cronologia di ogni progetto in un file sul disco, non nel
+repository:
+
+```
+~/.claude/projects/<percorso-del-progetto-con-i-trattini>/<id-sessione>.jsonl
+```
+
+Il nome della cartella e' il percorso del progetto con separatori e due punti
+sostituiti da trattini. Qui, con il progetto in `C:\Users\andre\Desktop\golosone-tessere`:
+
+```
+C:\Users\andre\.claude\projects\C--Users-andre-Desktop-golosone-tessere\
+```
+
+Per continuare la stessa conversazione altrove:
+
+1. copia quel file `.jsonl` sul secondo computer, nella cartella corrispondente
+   al percorso in cui hai messo il progetto **li'** (se l'utente Windows si
+   chiama diversamente, cambia anche il nome della cartella: la codifica deve
+   combaciare con il percorso reale, altrimenti Claude Code non trova nulla);
+2. apri il progetto e lancia `claude --resume`, poi scegli la sessione
+   dall'elenco.
+
+**Quel file non va su GitHub.** Contiene per intero i comandi eseguiti e il loro
+output, quindi anche le chiavi incollate durante il lavoro — nel nostro caso la
+chiave privata del service account Google. Il `.gitignore` esclude i `.jsonl`
+apposta: si trasferisce a mano, con una chiavetta o una cartella cloud privata.
 
 ## Da fare
 
