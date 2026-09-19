@@ -922,6 +922,50 @@ const esc = (s: unknown) =>
  * dati personali (solo il nome di battesimo) perche' chi ha il link vede questa
  * pagina. E' sola lettura: assegnare punti passa da rotte con sessione.
  */
+/**
+ * Il cliente attiva la tessera da solo, inquadrando il QR.
+ *
+ * Prima l'intestazione si faceva dalla cassa, ma la cassa non ha tastiera:
+ * scrivere un nome col cliente davanti e la fila dietro e' il momento peggiore
+ * per digitare. Cosi' l'operatore consegna il cartoncino e basta, e il nome lo
+ * scrive chi lo conosce meglio, sul proprio telefono.
+ *
+ * Non serve sessione, per forza: chi attiva e' un cliente. Il controllo che
+ * conta e' che una tessera si intesti UNA VOLTA SOLA - senza, chiunque abbia
+ * il link potrebbe riscrivere il nome di un cliente gia' registrato.
+ */
+app.post('/api/tessera/:code/attiva', async (c) => {
+  const code = normalizeCode(c.req.param('code'));
+  if (!isValidCode(code)) return c.json(fail('Codice tessera non valido'), 404);
+
+  const card = await findByCode(c.env.DB, code);
+  if (!card) return c.json(fail('Tessera non trovata'), 404);
+  if (card.activated_at) return c.json(fail('Questa tessera e gia attiva'), 409);
+
+  type Modulo = { firstName?: string; phone?: string; consent?: boolean };
+  // corpo assente o malformato: si prosegue a mani vuote e sara' il controllo
+  // sul nome a rispondere, invece di far esplodere la rotta
+  const body = await c.req.json<Modulo>().catch((): Modulo => ({}));
+
+  const nome = (body.firstName ?? '').trim();
+  if (!nome) return c.json(fail('Serve il nome'), 400);
+  // Il nome finisce sulla tessera nel telefono e nelle ricerche in cassa:
+  // un limite tiene fuori gli incollaggi accidentali, non i nomi lunghi.
+  if (nome.length > 40) return c.json(fail('Il nome e troppo lungo'), 400);
+
+  try {
+    const customer = await activateCard(c.env.DB, {
+      customerId: card.id,
+      firstName: nome,
+      phone: body.phone,
+      consent: body.consent,
+    });
+    return c.json({ ok: true, firstName: customer.first_name });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
+});
+
 app.get('/c/:code', async (c) => {
   const code = normalizeCode(c.req.param('code'));
   const settings = await getSettings(c.env.DB);
@@ -962,6 +1006,95 @@ type HistoryRow = {
   reward_name: string | null;
 };
 
+/**
+ * La pagina che vede chi inquadra una tessera appena consegnata.
+ *
+ * Chiede il minimo indispensabile: il nome. Il telefono e' facoltativo e
+ * serve a una cosa sola - ritrovare la tessera quando il cliente la dimentica
+ * a casa - e lo dice, invece di raccoglierlo e basta. Il consenso e' spento di
+ * default: e' un consenso, non un modulo da sbrigare.
+ *
+ * Niente cognome: la pagina mostra solo il nome di battesimo, e chiedere un
+ * dato che non si usa e' solo un campo in piu' da compilare in piedi.
+ */
+function paginaAttivazione(head: string, storeName: string, code: string): string {
+  return `${head}
+<main>
+  <header class="hero">
+    <p class="shop">${esc(storeName)}</p>
+    <h1>Attiva la tessera</h1>
+    <p class="hint">Ci vuole un nome. Da lì in poi i punti si accumulano da soli.</p>
+  </header>
+
+  <section class="card">
+    <form class="modulo" id="modulo" novalidate>
+      <label for="nome">Come ti chiami</label>
+      <input id="nome" type="text" autocomplete="given-name" enterkeyhint="done"
+             maxlength="40" placeholder="Il tuo nome" required>
+
+      <label for="tel">Telefono <span class="facolt">facoltativo</span></label>
+      <input id="tel" type="tel" inputmode="tel" autocomplete="tel" maxlength="25"
+             placeholder="Serve solo se dimentichi la tessera">
+
+      <label class="spunta">
+        <input id="consenso" type="checkbox">
+        <span>Avvisatemi delle novità e delle promozioni</span>
+      </label>
+
+      <button class="bottone" type="submit" id="vai">Attiva la tessera</button>
+      <p class="hint errore" id="esito" role="status"></p>
+    </form>
+  </section>
+
+  <footer>
+    <p>Codice tessera</p>
+    <p class="code">${esc(code)}</p>
+    <p class="hint">Conserva il cartoncino, oppure buttalo: da adesso basta il telefono.</p>
+  </footer>
+</main>
+
+<script>
+  const modulo = document.getElementById('modulo');
+  const vai = document.getElementById('vai');
+  const esito = document.getElementById('esito');
+
+  modulo.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const nome = document.getElementById('nome').value.trim();
+    if (!nome) {
+      esito.textContent = 'Scrivi il tuo nome.';
+      document.getElementById('nome').focus();
+      return;
+    }
+
+    // Il doppio tocco sul pulsante e' la norma su un telefono: senza questo,
+    // la seconda richiesta troverebbe la tessera gia' attiva e mostrerebbe un
+    // errore a chi ha appena fatto tutto giusto.
+    vai.disabled = true;
+    esito.textContent = '';
+    try {
+      const r = await fetch('/api/tessera/${esc(code)}/attiva', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firstName: nome,
+          phone: document.getElementById('tel').value.trim() || undefined,
+          consent: document.getElementById('consenso').checked,
+        }),
+      });
+      const dati = await r.json();
+      if (!r.ok || !dati.ok) throw new Error(dati.error || 'Non è andata, riprova');
+      // ricarico: la stessa pagina ora mostra il saldo e i pulsanti Wallet
+      location.reload();
+    } catch (err) {
+      esito.textContent = err.message;
+      vai.disabled = false;
+    }
+  });
+</script>
+</body></html>`;
+}
+
 function customerPage(data: {
   storeName: string;
   customer?: Customer;
@@ -984,6 +1117,12 @@ function customerPage(data: {
   }
 
   const cu = data.customer;
+
+  // Tessera ancora nella scatola: qui non c'e' un saldo da mostrare, c'e' un
+  // cliente da registrare. Prima questa pagina mostrava "Ciao " senza nome e
+  // due pulsanti Wallet che non potevano funzionare.
+  if (!cu.activated_at) return paginaAttivazione(head, data.storeName, cu.code);
+
   const next = (data.rewards ?? []).find((r) => r.points_cost > cu.points_balance);
   const reachable = (data.rewards ?? []).filter((r) => r.points_cost <= cu.points_balance);
 

@@ -44,6 +44,7 @@ Superfici diverse, un solo dato condiviso:
 | Salva nel telefono | `/c/CODICE/wallet` | il cliente, da Android |
 | Salva nel telefono | `/c/CODICE/apple` | il cliente, da iPhone |
 | Pagina cliente | `/c/CODICE` | chiunque abbia il link, sola lettura |
+| Attivazione | `/c/CODICE` | il cliente, se la tessera e' ancora vergine |
 | Aggiornamento pass | `/wallet-apple/v1/*` | l'iPhone del cliente, non una persona |
 | API | `/api/*` | le due sopra |
 
@@ -106,8 +107,29 @@ cassa aperte**: senza quello, cambiarlo non servirebbe a niente.
 
 Non si puo' stampare un cartoncino mentre il cliente aspetta al banco. Quindi le
 tessere si stampano in lotti, restano in una scatola alla cassa, e si attivano
-al momento della consegna: si scansiona la tessera vergine, si scrive il nome,
-fatto.
+al momento della consegna.
+
+**Ad attivarle e' il cliente, dal proprio telefono.** L'operatore consegna il
+cartoncino e basta: chi lo riceve inquadra il QR e trova un modulo al posto del
+saldo. Il nome lo scrive chi lo conosce meglio, sulla propria tastiera.
+
+Il motivo e' pratico: **la cassa non ha una tastiera**, e scrivere un nome col
+cliente davanti e la fila dietro e' il momento peggiore per digitare. Il
+modulo chiede il minimo: il nome. Il telefono e' facoltativo, serve solo a
+ritrovare la tessera quando il cliente la dimentica, e lo dice invece di
+raccoglierlo in silenzio.
+
+L'intestazione dalla cassa **resta**, per chi non ha uno smartphone o non se
+la cava: e' la stessa rotta di prima, e compare scansionando una tessera
+vergine.
+
+Il prezzo di questa scelta: attivare non richiede piu' una cassa sbloccata,
+quindi **chiunque abbia il codice di una tessera vergine puo' intestarsela**.
+Regge per tre ragioni messe insieme: i codici non si indovinano (28 caratteri
+per 8 posizioni), i cartoncini stanno nella scatola finche' non si consegnano,
+e una tessera intestata a vanvera nasce comunque con zero punti e il titolare
+puo' bloccarla. Quel che NON puo' succedere e' riscrivere il nome di un
+cliente gia' registrato: una tessera si intesta una volta sola.
 
 Finche' non e' consegnata, una tessera ha `first_name` e `activated_at` a NULL.
 Non puo' ricevere punti (scansionare il cartoncino sbagliato dalla scatola non

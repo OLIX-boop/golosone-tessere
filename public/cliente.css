@@ -43,8 +43,8 @@ footer p{margin:.2em 0}
 footer .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
              font-size:24px;letter-spacing:.22em;color:var(--ink)}
 
-/* Tessera nel telefono */
-.telefono .bottone{
+/* Pulsante pieno: lo usano i due Wallet e il modulo di attivazione. */
+.bottone{
   display:inline-block;background:var(--accent);color:var(--card);
   text-decoration:none;font-weight:600;padding:13px 20px;border-radius:10px;
   margin:.4em 0 0;
@@ -52,3 +52,27 @@ footer .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 .telefono ol.passi{margin:.6em 0 0;padding-left:1.3em;color:var(--ink);font-size:15px}
 .telefono ol.passi li{margin:.3em 0;padding-left:.2em}
 .telefono ol.passi b{font-weight:600}
+
+/* ---- Attivazione ----
+   E' la prima cosa che vede chi inquadra una tessera appena consegnata: da
+   qui si registra da solo, senza passare dalla cassa. I campi sono grandi
+   perche' si compilano in piedi, con una mano, davanti al banco. */
+.modulo{display:flex;flex-direction:column;gap:6px}
+.modulo label{font-size:14px;font-weight:600;margin-top:14px}
+.modulo label:first-child{margin-top:0}
+.facolt{font-weight:400;color:var(--muted)}
+/* font:inherit tiene i 16px del corpo: sotto quella misura iOS ingrandisce
+   la pagina appena si tocca il campo, e il modulo salta via dallo schermo. */
+.modulo input[type=text],.modulo input[type=tel]{
+  font:inherit;width:100%;padding:13px 14px;border-radius:10px;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink);
+}
+.modulo input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.spunta{display:flex;align-items:flex-start;gap:10px;margin-top:18px;
+        font-size:14px;font-weight:400;color:var(--ink)}
+.spunta input{flex:none;width:20px;height:20px;margin:1px 0 0;accent-color:var(--accent)}
+.modulo .bottone{width:100%;border:0;font:inherit;font-weight:600;
+                 cursor:pointer;margin-top:20px;text-align:center}
+.modulo .bottone:disabled{opacity:.55;cursor:progress}
+.errore{color:var(--err)}
+.errore:empty{display:none}
