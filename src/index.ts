@@ -12,7 +12,7 @@ import {
 } from './auth.ts';
 import { isValidCode, normalizeCode, parseInput } from './codes.ts';
 import { parsePoints, pointsLabel } from './points.ts';
-import { qrSvg } from './qr.ts';
+import { qrDataUrl, qrSvg } from './qr.ts';
 import { ensureClass, readConfig, readConfigDetailed, saveLink, upsertObject } from './google-wallet.ts';
 import {
   activateCard,
@@ -700,6 +700,77 @@ const esc = (s: unknown) =>
  * dati personali (solo il nome di battesimo) perche' chi ha il link vede questa
  * pagina. E' sola lettura: assegnare punti passa da rotte con sessione.
  */
+/* ------------------------------------------------- la tessera nell'app */
+
+/**
+ * La tessera in JSON, per l'app dei clienti del negozio.
+ *
+ * È **la stessa roba** che `/c/:code` mostra già in HTML a chiunque abbia il
+ * link: nome di battesimo, saldo, premi e ultimi movimenti. Non apre niente
+ * di nuovo — cambia solo il formato, perché un'app non sa leggere una pagina.
+ *
+ * Aperta a internet come la pagina gemella: assegnare punti resta dietro la
+ * sessione di cassa, e da qui non si scrive niente. Un codice è lungo otto
+ * caratteri su un alfabeto di ventotto, cioè quasi quattrocento miliardi di
+ * combinazioni: tirarne a caso non è una strada.
+ *
+ * Una tessera **mai consegnata** non esiste: `activated_at` a NULL vuol dire
+ * un cartoncino ancora nella scatola alla cassa, e mostrarlo direbbe «Ciao»
+ * a nessuno.
+ */
+app.use('/api/pubblico/*', async (c, next) => {
+  c.header('Access-Control-Allow-Origin', '*');
+  c.header('Access-Control-Allow-Headers', 'Content-Type');
+  c.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  if (c.req.method === 'OPTIONS') return c.body(null, 204);
+  return next();
+});
+
+app.get('/api/pubblico/tessera/:code', async (c) => {
+  const code = normalizeCode(c.req.param('code'));
+  if (!isValidCode(code)) return c.json({ errore: 'Codice non valido' }, 404);
+
+  const customer = await findByCode(c.env.DB, code);
+  if (!customer || !customer.activated_at) {
+    return c.json({ errore: 'Tessera non trovata' }, 404);
+  }
+
+  const settings = await getSettings(c.env.DB);
+  const mostraPremi = (settings.show_rewards_to_customer ?? '1') !== '0';
+
+  const [movimenti, premi] = await Promise.all([
+    customerHistory(c.env.DB, customer.id, 10),
+    mostraPremi ? listRewards(c.env.DB) : Promise.resolve([]),
+  ]);
+
+  const saldo = customer.points_balance;
+  const elenco = (premi as { name: string; points_cost: number }[]).map((p) => ({
+    nome: p.name,
+    punti: p.points_cost,
+    raggiunto: p.points_cost <= saldo,
+  }));
+  const prossimo = elenco.find((p) => !p.raggiunto) ?? null;
+
+  return c.json({
+    negozio: settings.store_name ?? 'Pasticceria',
+    nome: customer.first_name,
+    punti: saldo,
+    // Il QR porta l'indirizzo della pagina cliente, esattamente come quello
+    // stampato sul cartoncino: il lettore della cassa non distingue lo
+    // schermo dalla carta, e in negozio non cambia niente.
+    qr: qrDataUrl(`${new URL(c.req.url).origin}/c/${customer.code}`),
+    codice: customer.code,
+    premi: elenco,
+    prossimo: prossimo ? { ...prossimo, mancano: prossimo.punti - saldo } : null,
+    movimenti: (movimenti as HistoryRow[]).map((m) => ({
+      quando: m.created_at,
+      cosa: m.kind === 'redeem' ? (m.reward_name ?? 'Premio') : 'Punti assegnati',
+      delta: m.points_delta,
+      annullato: !!m.voided_at,
+    })),
+  });
+});
+
 app.get('/c/:code', async (c) => {
   const code = normalizeCode(c.req.param('code'));
   const settings = await getSettings(c.env.DB);

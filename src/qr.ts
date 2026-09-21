@@ -60,3 +60,27 @@ export function qrSvg(
     `</svg>`
   );
 }
+
+/**
+ * Lo stesso QR come **immagine già pronta**, non come SVG.
+ *
+ * Serve all'app dei clienti, che il codice lo mostra a schermo perché il
+ * lettore della cassa lo legga: è lo stesso QR del cartoncino, quindi in
+ * cassa non cambia niente.
+ *
+ * Immagine e non vettoriale perché React Native gli SVG non li disegna —
+ * lo abbiamo già scoperto con le illustrazioni del catalogo, che sul telefono
+ * erano rettangoli vuoti. `qrcode-generator` sa produrre una GIF senza
+ * dipendere da niente: nessuna libreria in più sul telefono e nessuna build
+ * nuova da installare.
+ *
+ * `cella` sono i pixel per modulo: bassa, l'immagine pesa poco e il telefono
+ * la ingrandisce da sé senza sfocarla, perché un QR è fatto di quadrati.
+ */
+export function qrDataUrl(text: string, opts: { cella?: number; margine?: number; level?: QrLevel } = {}): string {
+  const { cella = 8, margine = 4, level = 'M' } = opts;
+  const qr = qrcode(0, level);
+  qr.addData(text);
+  qr.make();
+  return qr.createDataURL(cella, margine);
+}

@@ -35,6 +35,7 @@ Tre superfici, un solo dato condiviso:
 | Pannello titolare | `/titolare` | titolare, con un PIN proprio |
 | Salva nel telefono | `/c/CODICE/wallet` | il cliente, da Android |
 | Pagina cliente | `/c/CODICE` | chiunque abbia il link, sola lettura |
+| Tessera in JSON | `/api/pubblico/tessera/CODICE` | l'app degli ordini, sola lettura |
 | API | `/api/*` | le due sopra |
 
 Il **QR sulla tessera contiene l'URL della pagina cliente**, e serve a due cose
@@ -123,6 +124,24 @@ nessuno se ne accorga.
 `transactions` e' append-only: un errore si annulla (`voided_at`), non si
 cancella. Serve a capire come si e' arrivati a un saldo, non a certificare
 acquisti.
+
+### La tessera nell'app degli ordini
+
+Il negozio ha una seconda app, quella con cui i clienti ordinano da casa
+(`ordini-pasticceria/il-golosone`). Dentro c'e' una scheda «Tessera» che
+mostra saldo, premi e **lo stesso QR del cartoncino**: in cassa il lettore non
+distingue lo schermo dalla carta, quindi li' non cambia niente.
+
+Legge da `/api/pubblico/tessera/:codice`, che e' la gemella in JSON di
+`/c/:codice`: **stessi dati, stessa esposizione**, solo in un formato che
+un'app sa leggere. Non apre niente di nuovo, e da li' non si scrive.
+
+Una tessera mai consegnata risponde «non trovata» come una inesistente: un
+cartoncino ancora nella scatola non e' di nessuno, e mostrarlo direbbe «Ciao»
+al vuoto.
+
+I due sistemi restano separati: un punto assegnato al banco non deve dipendere
+dal fatto che il sistema degli ordini sia in piedi, e viceversa.
 
 ### Il QR da sola lettura
 
