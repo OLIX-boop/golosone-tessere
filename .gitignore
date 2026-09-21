@@ -37,3 +37,6 @@ service-account*.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Chiavi e certificati Apple: non devono MAI finire nel repository
+certificati/

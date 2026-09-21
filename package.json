@@ -11,10 +11,13 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/**/*.test.ts\"",
     "wallet:chiave": "node scripts/carica-chiave-wallet.mjs",
-    "logo": "node scripts/genera-logo.mjs"
+    "logo": "node scripts/genera-logo.mjs",
+    "immagini-pass": "node scripts/genera-immagini-pass.mjs"
   },
   "dependencies": {
+    "asn1js": "^3.0.10",
     "hono": "^4.6.14",
+    "pkijs": "^3.4.1",
     "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {

@@ -4,6 +4,10 @@ export type Env = {
   DB: D1Database;
   /** JSON del service account Google, come segreto del Worker (mai in database) */
   GOOGLE_WALLET_SA?: string;
+  /** Certificato Pass Type ID, chiave privata e intermedio Apple: segreti, mai in database */
+  APPLE_PASS_CERT?: string;
+  APPLE_PASS_KEY?: string;
+  APPLE_WWDR_CERT?: string;
 };
 
 export type Customer = {
