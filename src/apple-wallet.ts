@@ -19,6 +19,7 @@
  */
 import * as pkijs from 'pkijs';
 import { IMMAGINI_PASS } from './pass-immagini.ts';
+import { COLORI, ETICHETTE, rigaProssimo, type Prossimo } from './pass-comune.ts';
 
 export type AppleConfig = {
   /** PEM del certificato Pass Type ID rilasciato da Apple */
@@ -37,7 +38,9 @@ export type DatiTessera = {
   code: string;
   firstName: string | null;
   points: number;
-  prossimo?: { nome: string; mancano: number } | null;
+  prossimo?: Prossimo;
+  /** se il negozio ha premi: senza, la riga del prossimo premio non c'e' */
+  ciSonoPremi?: boolean;
 };
 
 // ------------------------------------------------------------------ utilita'
@@ -187,12 +190,9 @@ export async function firmaManifest(c: AppleConfig, manifest: Uint8Array): Promi
 export function costruisciPassJson(c: AppleConfig, t: DatiTessera, authToken: string) {
   const urlCliente = `${c.origin}/c/${t.code}`;
 
-  const ausiliari = t.prossimo
-    ? [{
-        key: 'prossimo',
-        label: 'PROSSIMO PREMIO',
-        value: `${t.prossimo.mancano} ${t.prossimo.mancano === 1 ? 'punto' : 'punti'} a ${t.prossimo.nome}`,
-      }]
+  const riga = rigaProssimo(t.prossimo ?? null, !!t.ciSonoPremi);
+  const ausiliari = riga
+    ? [{ key: 'prossimo', label: ETICHETTE.prossimo.toUpperCase(), value: riga }]
     : [];
 
   return {
@@ -202,11 +202,12 @@ export function costruisciPassJson(c: AppleConfig, t: DatiTessera, authToken: st
     serialNumber: t.code,
     organizationName: c.storeName,
     description: `Tessera punti ${c.storeName}`,
-    logoText: c.storeName,
+    // Niente `logoText`: il logo e' gia' la scritta «Il Golosone», e il nome
+    // accanto la ripeterebbe due volte in dieci centimetri.
 
-    backgroundColor: 'rgb(140, 74, 47)',
-    foregroundColor: 'rgb(244, 241, 236)',
-    labelColor: 'rgb(226, 208, 196)',
+    backgroundColor: COLORI.fondo.rgb,
+    foregroundColor: COLORI.testo.rgb,
+    labelColor: COLORI.oro.rgb,
 
     // Presenti fin dal primo pass: aggiungerli dopo non servirebbe a niente,
     // perche' i pass gia' scaricati resterebbero senza.
@@ -223,11 +224,11 @@ export function costruisciPassJson(c: AppleConfig, t: DatiTessera, authToken: st
     }],
 
     storeCard: {
-      primaryFields: [{ key: 'punti', label: 'PUNTI', value: t.points }],
-      secondaryFields: [{ key: 'nome', label: 'INTESTATARIO', value: t.firstName ?? 'Cliente' }],
+      primaryFields: [{ key: 'punti', label: ETICHETTE.punti.toUpperCase(), value: t.points }],
+      secondaryFields: [{ key: 'nome', label: ETICHETTE.intestatario.toUpperCase(), value: t.firstName ?? 'Cliente' }],
       auxiliaryFields: ausiliari,
       backFields: [
-        { key: 'codice', label: 'Codice tessera', value: t.code },
+        { key: 'codice', label: ETICHETTE.codice, value: t.code },
         {
           key: 'saldo',
           label: 'Il tuo saldo aggiornato',

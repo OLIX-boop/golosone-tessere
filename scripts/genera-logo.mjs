@@ -1,46 +1,50 @@
 /**
- * Genera il logo usato nel pass di Google Wallet.
+ * I loghi della tessera Google Wallet, dal marchio del Golosone.
  *
- * Google RIFIUTA la creazione della classe senza un logo ("LoyaltyClass cannot
- * be created without a program logo"), e l'immagine deve stare su un indirizzo
- * HTTPS pubblico: la serviamo dal Worker stesso, cosi' non serve ospitarla
- * altrove.
+ * Google ne vuole due, e li usa in modo diverso:
  *
- * Questo e' un segnaposto decoroso. Per metterci il logo vero della
- * pasticceria basta sostituire public/logo.png con un PNG quadrato - almeno
- * 660x660, sfondo pieno e non trasparente, perche' Google lo mostra su fondi
- * di colore variabile.
+ *   - `logo.png`, quadrato 660x660, obbligatorio: senza, Google rifiuta la
+ *     classe ("LoyaltyClass cannot be created without a program logo"). Lo
+ *     ritaglia **a cerchio** e lo mostra negli elenchi e nelle notifiche,
+ *     quindi il marchio sta stretto al centro: la scritta è larga e bassa, e
+ *     «Il» a sinistra e il cappello a destra sono le prime cose che il
+ *     cerchio si mangerebbe.
+ *   - `logo-largo.png`, 1280x400: se c'è prende il posto del cerchio in cima
+ *     alla tessera. È quello che fa sembrare la tessera del negozio invece
+ *     che un modulo di Google, e che la rende uguale a quella di Apple.
+ *
+ * Tutti e due su fondo cremisi pieno, lo stesso della tessera: un bordo di
+ * colore diverso intorno al logo si vedrebbe come un adesivo.
+ *
+ * Quando le immagini cambiano va alzato VERSIONE_IMMAGINI in
+ * src/pass-comune.ts, altrimenti Google continua a mostrare le vecchie.
  *
  *   npm run logo
  */
 import sharp from 'sharp';
-import { writeFileSync } from 'node:fs';
+import { COLORI } from '../src/pass-comune.ts';
+import { marchioTinto } from './marchio.mjs';
 
-const LATO = 660;
-const MARRONE = '#8c4a2f';
-const CREMA = '#f4f1ec';
+async function suFondo(largo, alto, marchio, nome, dove = { gravity: 'centre' }) {
+  await sharp({ create: { width: largo, height: alto, channels: 4, background: COLORI.fondo.hex } })
+    .composite([{ input: marchio, ...dove }])
+    // Fondo pieno e senza trasparenza: Google mostra i loghi su fondi che
+    // non decidiamo noi, e un alfa lascerebbe trasparire quelli.
+    .flatten({ background: COLORI.fondo.hex })
+    .removeAlpha()
+    .png({ compressionLevel: 9 })
+    .toFile(`public/${nome}`);
+  console.log(`public/${nome}  ${largo}x${alto}`);
+}
 
-// Panna a cerchi sovrapposti invece che a curve: a 60 pixel sul telefono le
-// bezier fini spariscono, le forme piene no.
-const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${LATO}" height="${LATO}" viewBox="0 0 660 660">
-  <rect width="660" height="660" fill="${MARRONE}"/>
-  <g fill="${CREMA}">
-    <circle cx="330" cy="168" r="30"/>
-    <circle cx="256" cy="286" r="62"/>
-    <circle cx="330" cy="240" r="74"/>
-    <circle cx="404" cy="286" r="62"/>
-    <rect x="194" y="286" width="272" height="66"/>
-    <path d="M186 348 h288 l-32 186 a20 20 0 0 1 -20 17 h-164 a20 20 0 0 1 -20 -17 z"/>
-  </g>
-  <g stroke="${MARRONE}" stroke-width="13" stroke-linecap="round" opacity="0.5">
-    <line x1="268" y1="382" x2="252" y2="516"/>
-    <line x1="330" y1="382" x2="330" y2="518"/>
-    <line x1="392" y1="382" x2="408" y2="516"/>
-  </g>
-</svg>`;
+// Il cerchio di Google lascia un margine del 15% per lato: il marchio sta
+// dentro il 70% centrale, e siccome è più largo che alto è la larghezza a
+// toccare il bordo, quindi si stringe ancora un po'.
+await suFondo(660, 660, await marchioTinto(COLORI.oro.hex, { largo: 400, alto: 400 }), 'logo.png');
 
-const png = await sharp(Buffer.from(svg)).png({ compressionLevel: 9 }).toBuffer();
-writeFileSync('public/logo.png', png);
-
-const meta = await sharp(png).metadata();
-console.log(`public/logo.png  ${meta.width}x${meta.height}  ${(png.length / 1024).toFixed(1)} kB`);
+// Nel logo largo il marchio occupa l'altezza, con un filo d'aria sopra e
+// sotto, ed è **a sinistra**: Google mette questo logo in alto a sinistra
+// sulla tessera, dove Apple mette il suo, e centrato resterebbe staccato
+// dal bordo come un'etichetta messa storta.
+const largo = await marchioTinto(COLORI.oro.hex, { largo: 1100, alto: 340 });
+await suFondo(1280, 400, largo, 'logo-largo.png', { left: 40, top: 30 });

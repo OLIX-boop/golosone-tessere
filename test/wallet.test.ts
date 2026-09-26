@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { signJwt, saveLink, classId, objectId, readConfig, readConfigDetailed, type WalletConfig } from '../src/google-wallet.ts';
+import { signJwt, saveLink, classId, objectId, readConfig, readConfigDetailed, aspetto, classeAllineata, type WalletConfig } from '../src/google-wallet.ts';
 
 /**
  * Senza credenziali Google non si puo' provare il giro fino al telefono, ma la
@@ -158,4 +158,33 @@ test('senza configurazione non si rompe niente: si spegne e basta', () => {
     'manca issuer id',
   );
   assert.ok(readConfig({ GOOGLE_WALLET_SA: JSON.stringify(sa) }, s, 'https://x.dev'));
+});
+
+/**
+ * Il riallineamento della classe decide se le tessere già nei telefoni
+ * cambiano aspetto. Se sbaglia per eccesso rimanda la classe in revisione a
+ * ogni clic; se sbaglia per difetto le tessere restano col vecchio aspetto
+ * per sempre, senza che nessuno se ne accorga.
+ */
+test('la classe identica a quella voluta non si riscrive, anche con i campi aggiunti da Google', () => {
+  const voluto = aspetto(config);
+  const daGoogle = {
+    ...voluto,
+    // Google restituisce le immagini arricchite: conta solo l'indirizzo
+    programLogo: { ...voluto.programLogo, kind: 'walletobjects#image', sourceUri: { ...voluto.programLogo.sourceUri, description: '' } },
+    reviewStatus: 'approved',
+    version: '3',
+  };
+  assert.equal(classeAllineata(daGoogle, voluto), true);
+});
+
+test('la classe col vecchio aspetto si riallinea: colore, logo largo o etichette diversi', () => {
+  const voluto = aspetto(config);
+  const { wideProgramLogo: _senza, ...senzaLogoLargo } = voluto;
+  assert.equal(classeAllineata({ ...voluto, hexBackgroundColor: '#8c4a2f' }, voluto), false);
+  assert.equal(classeAllineata(senzaLogoLargo, voluto), false);
+  assert.equal(classeAllineata({ ...voluto, accountNameLabel: undefined }, voluto), false);
+  // lo stesso file con un'altra versione e' un'immagine diversa per Google
+  const vecchioLogo = { sourceUri: { uri: `${config.origin}/logo.png` } };
+  assert.equal(classeAllineata({ ...voluto, programLogo: vecchioLogo }, voluto), false);
 });

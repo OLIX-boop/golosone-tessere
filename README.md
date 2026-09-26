@@ -21,8 +21,8 @@ nessun costo fisso: sta interamente nei piani gratuiti.
 | `src/db.ts` | Query D1 |
 | `src/google-wallet.ts` | Classe e oggetto del pass, firma JWT, riallineamento del saldo |
 | `migrations/` | Schema: `0001` tabelle, `0002` premio iniziale, `0003` sessione titolare |
-| `public/` | Pannello cassa, pannello titolare, CSS, logo servito a Google |
-| `scripts/` | Caricamento della chiave Wallet, generazione del logo segnaposto |
+| `public/` | Pannello cassa, pannello titolare, CSS, marchio e loghi serviti a Google |
+| `scripts/` | Caricamento della chiave Wallet, loghi e immagini delle tessere |
 | `test/` | Test su punti, codici, autenticazione e pass |
 
 ## Come e messo insieme
@@ -343,23 +343,35 @@ cassa risponde in **44 millisecondi** e i fallimenti restano nei log. Nel
 peggiore dei casi il pass resta indietro finche' il cliente non riapre la sua
 pagina.
 
-### Il logo e obbligatorio
+### Il marchio e i colori delle tessere
 
-Google rifiuta la classe senza logo: *"LoyaltyClass cannot be created without a
-program logo"*. L'immagine deve stare su un indirizzo HTTPS pubblico, quindi la
-serve il Worker stesso da `public/logo.png`.
+Le due tessere, Apple e Google, hanno lo stesso aspetto: fondo cremisi, marchio
+del Golosone in oro, le stesse etichette e la stessa riga del prossimo premio.
+Colori, parole e versione delle immagini stanno in `src/pass-comune.ts`,
+un posto solo: prima il marrone era scritto due volte, e bastava cambiarne uno
+per avere due tessere diverse.
 
-Quello attuale e' un segnaposto generato. Per metterci il logo vero basta
-sostituire il file con un PNG quadrato di almeno 660x660, **sfondo pieno e non
-trasparente** perche' Google lo mostra su fondi di colore variabile. Per
-rigenerare il segnaposto dopo aver cambiato i colori:
+Tutto parte da `public/marchio.png`, il marchio con lo sfondo trasparente.
+Se cambia:
 
 ```bash
 npm run logo
+npm run immagini-pass
 ```
 
-Il logo cambia solo alla creazione della classe. Se lo sostituisci dopo,
-la classe esistente va aggiornata a mano dalla console Google.
+e poi si alza `VERSIONE_IMMAGINI` in `src/pass-comune.ts`: Google tiene le
+immagini in cache per indirizzo, e senza cambiarlo mostrerebbe le vecchie.
+
+Il primo genera i due loghi di Google: `logo.png`, quadrato, che Google
+**pretende** (senza, rifiuta la classe con *"LoyaltyClass cannot be created
+without a program logo"*) e ritaglia a cerchio; `logo-largo.png`, che prende
+il posto del cerchio in cima alla tessera. Il secondo incorpora icona e logo
+dentro il pass di Apple.
+
+Le tessere già nei telefoni si aggiornano da sole. Su Google la classe si
+riallinea al primo clic su «Aggiungi a Google Wallet» dopo il deploy, e da lì
+cambia per tutti. Su iPhone il pass si aggiorna quando il telefono lo richiede,
+per esempio tirando giù la tessera dal retro.
 
 ## Riprendere il lavoro su un altro computer
 

@@ -190,11 +190,10 @@ function aggiornaPassInSottofondo(c: any, card: Customer) {
       try {
         const cfg = readConfig(c.env, await getSettings(c.env.DB), new URL(c.req.url).origin);
         if (!cfg) return;
-        await upsertObject(cfg, {
-          code: card.code,
-          firstName: card.first_name,
-          points: card.points_balance,
-        });
+        // Dagli stessi dati della tessera Apple: col saldo cambia anche il
+        // prossimo premio, e le due tessere devono dire la stessa cosa.
+        const t = await datiPerPass(c.env, card.code);
+        if (t) await upsertObject(cfg, t.dati);
       } catch (err) {
         console.error('Aggiornamento Google Wallet fallito:', err);
       }
@@ -610,6 +609,7 @@ async function datiPerPass(env: Env, code: string) {
       prossimo: prossimo
         ? { nome: prossimo.name, mancano: prossimo.points_cost - card.points_balance }
         : null,
+      ciSonoPremi: premi.length > 0,
     },
   };
 }
@@ -751,17 +751,13 @@ app.get('/c/:code/wallet', async (c) => {
   const cfg = readConfig(c.env, settings, new URL(c.req.url).origin);
   if (!cfg) return c.text('Google Wallet non e configurato per questo negozio', 503);
 
-  const card = await findByCode(c.env.DB, code);
-  if (!card || !card.activated_at) return c.text('Tessera non trovata', 404);
+  const t = await datiPerPass(c.env, code);
+  if (!t) return c.text('Tessera non trovata', 404);
 
   try {
     await ensureClass(cfg);
-    await upsertObject(cfg, {
-      code: card.code,
-      firstName: card.first_name,
-      points: card.points_balance,
-    });
-    return c.redirect(await saveLink(cfg, card.code), 302);
+    await upsertObject(cfg, t.dati);
+    return c.redirect(await saveLink(cfg, t.card.code), 302);
   } catch (err) {
     console.error('Google Wallet:', err);
     return c.text('Non riesco a creare la tessera adesso. Riprova piu tardi.', 502);

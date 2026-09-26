@@ -21,6 +21,8 @@
  * fermarsi perche' Google non risponde.
  */
 
+import { COLORI, ETICHETTE, VERSIONE_IMMAGINI, rigaProssimo, type Prossimo } from './pass-comune.ts';
+
 export type ServiceAccount = { client_email: string; private_key: string };
 
 export type WalletConfig = {
@@ -121,39 +123,59 @@ export const objectId = (c: WalletConfig, code: string) =>
   // rispetta gia' questo vincolo
   `${c.issuerId}.${c.classSuffix}_${code}`;
 
+/** Un'immagine servita dal Worker stesso, cosi' non serve ospitarla altrove. */
+function immagine(c: WalletConfig, file: string) {
+  return {
+    // La versione in coda all'indirizzo: Google tiene le immagini in cache
+    // per indirizzo, e senza cambiarlo continuerebbe a mostrare le vecchie.
+    sourceUri: { uri: `${c.origin}/${file}?v=${VERSIONE_IMMAGINI}` },
+    contentDescription: {
+      defaultValue: { language: 'it', value: `Logo ${c.storeName}` },
+    },
+  };
+}
+
+/**
+ * La parte della classe che deve restare uguale alla tessera Apple: colori,
+ * marchio, parole. Separata dal resto perche' e' anche quello che si
+ * confronta e si riallinea quando cambia.
+ */
+export function aspetto(c: WalletConfig) {
+  return {
+    issuerName: c.storeName,
+    hexBackgroundColor: COLORI.fondo.hex,
+    // Obbligatorio: senza, Google rifiuta la classe con
+    // "LoyaltyClass cannot be created without a program logo". Lo ritaglia
+    // a cerchio e lo usa negli elenchi e nelle notifiche.
+    programLogo: immagine(c, 'logo.png'),
+    // Prende il posto del cerchio in cima alla tessera: e' il marchio intero,
+    // in alto a sinistra come su Apple.
+    wideProgramLogo: immagine(c, 'logo-largo.png'),
+    accountNameLabel: ETICHETTE.intestatario,
+    accountIdLabel: ETICHETTE.codice,
+  };
+}
+
 function classBody(c: WalletConfig) {
   return {
     id: classId(c),
-    issuerName: c.storeName,
     programName: 'Tessera punti',
     reviewStatus: 'UNDER_REVIEW',
-    hexBackgroundColor: '#8c4a2f',
     countryCode: 'IT',
-    // Obbligatorio: senza, Google rifiuta la classe con
-    // "LoyaltyClass cannot be created without a program logo".
-    // L'immagine la serve il Worker stesso, cosi' non serve ospitarla altrove.
-    programLogo: {
-      sourceUri: { uri: `${c.origin}/logo.png` },
-      contentDescription: {
-        defaultValue: { language: 'it', value: `Logo ${c.storeName}` },
-      },
-    },
+    ...aspetto(c),
     // Il saldo va nel modulo punti dell'oggetto, non qui: qui ci sta solo
     // cio' che e' uguale per tutti i clienti.
   };
 }
 
-function objectBody(c: WalletConfig, card: { code: string; firstName: string | null; points: number }) {
+function objectBody(c: WalletConfig, card: DatiPass) {
   return {
     id: objectId(c, card.code),
     classId: classId(c),
     state: 'ACTIVE',
     accountId: card.code,
     accountName: card.firstName ?? 'Cliente',
-    loyaltyPoints: {
-      label: 'Punti',
-      balance: { int: card.points },
-    },
+    ...saldo(card),
     barcode: {
       type: 'QR_CODE',
       value: `${c.origin}/c/${card.code}`,
@@ -178,7 +200,6 @@ export async function ensureClass(c: WalletConfig): Promise<void> {
   const token = await accessToken(c.sa);
   const testata = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const url = `${API}/loyaltyClass/${encodeURIComponent(classId(c))}`;
-  const atteso = classBody(c);
 
   const letta = await fetch(url, { headers: testata });
 
@@ -186,7 +207,7 @@ export async function ensureClass(c: WalletConfig): Promise<void> {
     const creata = await fetch(`${API}/loyaltyClass`, {
       method: 'POST',
       headers: testata,
-      body: JSON.stringify(atteso),
+      body: JSON.stringify(classBody(c)),
     });
     // 409 = l'ha creata qualcun altro nel frattempo, e va benissimo
     if (!creata.ok && creata.status !== 409) {
@@ -202,41 +223,63 @@ export async function ensureClass(c: WalletConfig): Promise<void> {
   // conservare lo stato "approved" durante una modifica e pretende
   // UNDER_REVIEW: riscrivere a ogni clic rimanderebbe la classe in revisione
   // senza motivo.
-  const corrente = (await letta.json()) as {
-    issuerName?: string;
-    programLogo?: { sourceUri?: { uri?: string } };
-  };
-  const allineata =
-    corrente.issuerName === atteso.issuerName &&
-    corrente.programLogo?.sourceUri?.uri === atteso.programLogo.sourceUri.uri;
-  if (allineata) return;
+  const corrente = (await letta.json()) as Record<string, unknown>;
+  const voluto = aspetto(c);
+  if (classeAllineata(corrente, voluto)) return;
 
   const patch = await fetch(url, {
     method: 'PATCH',
     headers: testata,
-    body: JSON.stringify({
-      issuerName: atteso.issuerName,
-      programLogo: atteso.programLogo,
-      reviewStatus: 'UNDER_REVIEW',
-    }),
+    body: JSON.stringify({ ...voluto, reviewStatus: 'UNDER_REVIEW' }),
   });
   if (!patch.ok) {
     throw new Error(`Riallineamento classe fallito (${patch.status}): ${await patch.text()}`);
   }
 }
 
+/**
+ * Se la classe su Google ha gia' l'aspetto voluto.
+ *
+ * Per le immagini conta l'indirizzo e non il resto: Google ci aggiunge
+ * campi suoi, e confrontare l'oggetto intero la darebbe sempre diversa.
+ */
+export function classeAllineata(corrente: Record<string, unknown>, voluto: ReturnType<typeof aspetto>): boolean {
+  const uri = (v: unknown) => (v as { sourceUri?: { uri?: string } } | undefined)?.sourceUri?.uri;
+  return (Object.keys(voluto) as (keyof typeof voluto)[]).every((k) =>
+    typeof voluto[k] === 'object'
+      ? uri(corrente[k]) === uri(voluto[k])
+      : corrente[k] === voluto[k],
+  );
+}
+
+export type DatiPass = {
+  code: string;
+  firstName: string | null;
+  points: number;
+  prossimo?: Prossimo;
+  ciSonoPremi?: boolean;
+};
+
+/** Saldo e prossimo premio: la parte dell'oggetto che cambia a ogni movimento. */
+function saldo(card: DatiPass) {
+  const riga = rigaProssimo(card.prossimo ?? null, !!card.ciSonoPremi);
+  return {
+    loyaltyPoints: { label: ETICHETTE.punti, balance: { int: card.points } },
+    // Come la riga ausiliaria di Apple. Quando non c'e' non si manda: il
+    // negozio senza premi non ha niente da dire qui.
+    ...(riga ? { secondaryLoyaltyPoints: { label: ETICHETTE.prossimo, balance: { string: riga } } } : {}),
+  };
+}
+
 /** Crea l'oggetto se manca, altrimenti ne aggiorna il saldo. */
-export async function upsertObject(
-  c: WalletConfig,
-  card: { code: string; firstName: string | null; points: number },
-): Promise<void> {
+export async function upsertObject(c: WalletConfig, card: DatiPass): Promise<void> {
   const token = await accessToken(c.sa);
   const id = objectId(c, card.code);
 
   const patch = await fetch(`${API}/loyaltyObject/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ loyaltyPoints: { label: 'Punti', balance: { int: card.points } } }),
+    body: JSON.stringify(saldo(card)),
   });
   if (patch.ok) return;
   if (patch.status !== 404) {
