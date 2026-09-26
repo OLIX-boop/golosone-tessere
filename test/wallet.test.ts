@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { signJwt, saveLink, classId, objectId, readConfig, readConfigDetailed, aspetto, classeAllineata, type WalletConfig } from '../src/google-wallet.ts';
+import { signJwt, saveLink, classId, objectId, logoUri, logoVersion, readConfig, readConfigDetailed, aspetto, classeAllineata, type WalletConfig } from '../src/google-wallet.ts';
 
 /**
  * Senza credenziali Google non si puo' provare il giro fino al telefono, ma la
@@ -161,6 +161,39 @@ test('senza configurazione non si rompe niente: si spegne e basta', () => {
 });
 
 /**
+ * Google copia il logo quando crea la classe e poi non lo riguarda piu'.
+ * Sostituire il file lasciava le tessere col logo vecchio, perche' il
+ * riallineamento confronta gli INDIRIZZI e quello non era cambiato. Legandolo
+ * al contenuto, cambiare l'immagine cambia anche l'indirizzo.
+ */
+test('l indirizzo del logo porta l impronta del contenuto', () => {
+  assert.equal(logoUri(config), `${config.origin}/logo.png`);
+  assert.equal(
+    logoUri({ ...config, logoVersion: 'a1b2c3d4' }),
+    `${config.origin}/logo.png?v=a1b2c3d4`,
+  );
+});
+
+test('due logo diversi danno impronte diverse, lo stesso logo la stessa', async () => {
+  const finti = (byte: number[]) =>
+    ({ fetch: async () => new Response(new Uint8Array(byte)) }) as any;
+
+  const a = await logoVersion(finti([1, 2, 3, 4]), 'https://x.dev');
+  const b = await logoVersion(finti([1, 2, 3, 4]), 'https://x.dev');
+  const c = await logoVersion(finti([9, 9, 9, 9]), 'https://x.dev');
+
+  assert.equal(a, b, 'lo stesso logo deve dare sempre la stessa impronta');
+  assert.notEqual(a, c);
+  assert.match(a!, /^[0-9a-f]{8}$/);
+});
+
+test('senza asset o con logo mancante si prosegue senza versione', async () => {
+  assert.equal(await logoVersion(undefined, 'https://x.dev'), undefined);
+  const rotto = { fetch: async () => new Response('', { status: 404 }) } as any;
+  assert.equal(await logoVersion(rotto, 'https://x.dev'), undefined);
+});
+
+/**
  * Il riallineamento della classe decide se le tessere già nei telefoni
  * cambiano aspetto. Se sbaglia per eccesso rimanda la classe in revisione a
  * ogni clic; se sbaglia per difetto le tessere restano col vecchio aspetto
@@ -184,7 +217,7 @@ test('la classe col vecchio aspetto si riallinea: colore, logo largo o etichette
   assert.equal(classeAllineata({ ...voluto, hexBackgroundColor: '#8c4a2f' }, voluto), false);
   assert.equal(classeAllineata(senzaLogoLargo, voluto), false);
   assert.equal(classeAllineata({ ...voluto, accountNameLabel: undefined }, voluto), false);
-  // lo stesso file con un'altra versione e' un'immagine diversa per Google
-  const vecchioLogo = { sourceUri: { uri: `${config.origin}/logo.png` } };
-  assert.equal(classeAllineata({ ...voluto, programLogo: vecchioLogo }, voluto), false);
+  // lo stesso file con un'altra impronta e' un'immagine diversa per Google
+  const conImpronta = aspetto({ ...config, logoVersion: 'a1b2c3d4' });
+  assert.equal(classeAllineata(voluto, conImpronta), false);
 });

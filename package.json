@@ -6,18 +6,16 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:local": "wrangler d1 execute tessere --local --file=./migrations/0001_init.sql && wrangler d1 execute tessere --local --file=./migrations/0002_premio.sql && wrangler d1 execute tessere --local --file=./migrations/0003_sessione_titolare.sql",
-    "db:remote": "wrangler d1 execute tessere --remote --file=./migrations/0001_init.sql && wrangler d1 execute tessere --remote --file=./migrations/0002_premio.sql && wrangler d1 execute tessere --remote --file=./migrations/0003_sessione_titolare.sql",
+    "db:local": "wrangler d1 execute tessere --local --file=./migrations/0001_init.sql && wrangler d1 execute tessere --local --file=./migrations/0002_premio.sql && wrangler d1 execute tessere --local --file=./migrations/0003_sessione_titolare.sql && wrangler d1 execute tessere --local --file=./migrations/0004_apple_wallet.sql",
+    "db:remote": "wrangler d1 execute tessere --remote --file=./migrations/0001_init.sql && wrangler d1 execute tessere --remote --file=./migrations/0002_premio.sql && wrangler d1 execute tessere --remote --file=./migrations/0003_sessione_titolare.sql && wrangler d1 execute tessere --remote --file=./migrations/0004_apple_wallet.sql",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/**/*.test.ts\"",
     "wallet:chiave": "node scripts/carica-chiave-wallet.mjs",
-    "logo": "node scripts/genera-logo.mjs",
-    "immagini-pass": "node scripts/genera-immagini-pass.mjs"
+    "apple:certificato": "node scripts/carica-certificato-apple.mjs",
+    "grafica": "node scripts/genera-grafica.mjs"
   },
   "dependencies": {
-    "asn1js": "^3.0.10",
     "hono": "^4.6.14",
-    "pkijs": "^3.4.1",
     "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {

@@ -1,328 +1,406 @@
 /**
- * Apple Wallet: costruzione e firma del .pkpass.
+ * Apple Wallet: la tessera nel telefono per chi ha un iPhone.
  *
- * Un .pkpass e' uno ZIP con dentro:
- *   - pass.json      la tessera (campi, colori, codice a barre)
- *   - le immagini    icon obbligatoria, logo consigliato
- *   - manifest.json  lo SHA-1 di ogni file
- *   - signature      firma CMS STACCATA del manifest
+ * Fino a ieri qui non c'era codice, e il README spiegava perche': senza
+ * account sviluppatore un pass si puo' solo creare a mano dal telefono, e
+ * resta congelato. Con l'account, il pass diventa un file che firmiamo noi e
+ * che si aggiorna da solo, esattamente come quello di Google.
  *
- * iOS rifiuta il pass in silenzio se uno solo di questi pezzi non torna:
- * niente messaggi, niente log, semplicemente non si apre. Per questo il test
- * ricostruisce lo zip e ricontrolla gli hash uno per uno.
+ * Com'e' fatto un .pkpass:
+ *   * `pass.json` - i dati della tessera;
+ *   * le immagini - `icon.png` e' obbligatoria, senza iOS non apre niente;
+ *   * `manifest.json` - l'impronta SHA-1 di ogni altro file;
+ *   * `signature` - la firma CMS del manifesto (vedi pkcs7.ts).
+ * Il tutto dentro un archivio ZIP (vedi zip.ts).
  *
- * A differenza di Google, qui il pass NON si aggiorna da solo: perche' cambi
- * serve il servizio web di PassKit. `webServiceURL` e `authenticationToken`
- * sono pero' dentro il pass fin da adesso, perche' un pass scaricato senza
- * quei campi non potra' MAI essere aggiornato, nemmeno costruendo il servizio
- * dopo: andrebbe riscaricato da ogni cliente.
+ * L'impronta e' SHA-1 perche' lo impone il formato, non per scelta: serve a
+ * legare i file al manifesto, e cio' che protegge davvero l'archivio e' la
+ * firma del manifesto, che invece e' SHA-256.
+ *
+ * Come per Google, tutto degrada in silenzio: se manca la configurazione il
+ * pulsante non compare e la cassa non se ne accorge.
  */
-import * as pkijs from 'pkijs';
-import { IMMAGINI_PASS } from './pass-immagini.ts';
-import { COLORI, ETICHETTE, rigaProssimo, type Prossimo } from './pass-comune.ts';
 
-export type AppleConfig = {
-  /** PEM del certificato Pass Type ID rilasciato da Apple */
-  certPem: string;
-  /** PEM della chiave privata che ha generato la richiesta */
-  keyPem: string;
-  /** PEM del certificato intermedio Apple WWDR */
-  wwdrPem: string;
-  passTypeId: string;
-  teamId: string;
-  storeName: string;
-  origin: string;
-};
-
-export type DatiTessera = {
-  code: string;
-  firstName: string | null;
-  points: number;
-  prossimo?: Prossimo;
-  /** se il negozio ha premi: senza, la riga del prossimo premio non c'e' */
-  ciSonoPremi?: boolean;
-};
-
-// ------------------------------------------------------------------ utilita'
+import { signDetached, type SignMaterial } from './pkcs7.ts';
+import { WWDR_G4 } from './apple-wwdr.ts';
+import { zip, type ZipEntry } from './zip.ts';
+import { sha256Hex, timingSafeEqual } from './auth.ts';
+import { COLORI, ETICHETTE, rigaDi, type DatiTessera } from './pass-comune.ts';
 
 const enc = new TextEncoder();
 
-function pemToDer(pem: string, tipo: string): Uint8Array {
-  const m = pem.match(new RegExp(`-----BEGIN ${tipo}-----([\\s\\S]*?)-----END ${tipo}-----`));
-  if (!m) throw new Error(`Nel PEM manca un blocco ${tipo}`);
-  const raw = atob(m[1].replace(/\s+/g, ''));
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
+export type AppleConfig = SignMaterial & {
+  /** identificativo registrato presso Apple, es. pass.it.pasticceria.tessere */
+  passTypeId: string;
+  teamId: string;
+  /** chiave APNs (.p8) per il push: se manca, i pass restano aggiornabili a mano */
+  apns: { keyId: string; keyPem: string } | null;
+  storeName: string;
+  origin: string;
+  /** segreto da cui si derivano i token di autenticazione dei pass */
+  authKey: string;
+  /**
+   * Il segreto dei pass emessi fra il 21 e il 26 settembre 2026, da una
+   * versione del codice che firmava i token in un altro modo
+   * (`sha256(segreto:codice)`). Quei pass stanno nei telefoni dei clienti e
+   * il token non si puo' cambiare: finche' esistono, si accetta anche questo.
+   */
+  authSecretVecchio?: string;
+};
 
-function b64ToBytes(b64: string): Uint8Array {
-  const raw = atob(b64);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-
-async function sha1Hex(dati: Uint8Array): Promise<string> {
-  const d = await crypto.subtle.digest('SHA-1', dati as unknown as ArrayBuffer);
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-// ---------------------------------------------------------------------- ZIP
-
-/**
- * ZIP senza compressione (metodo "stored").
- *
- * Comprimere farebbe risparmiare qualche kilobyte su file che sono gia' PNG
- * compressi, in cambio di un deflate da implementare e da sbagliare. iOS
- * accetta lo stored senza storcere il naso.
- */
-const CRC_TAVOLA = (() => {
-  const t = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[i] = c >>> 0;
-  }
-  return t;
-})();
-
-function crc32(dati: Uint8Array): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < dati.length; i++) c = CRC_TAVOLA[(c ^ dati[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-export function creaZip(voci: { nome: string; dati: Uint8Array }[]): Uint8Array {
-  const pezzi: Uint8Array[] = [];
-  const centrale: Uint8Array[] = [];
-  let offset = 0;
-
-  const u16 = (n: number) => new Uint8Array([n & 0xff, (n >>> 8) & 0xff]);
-  const u32 = (n: number) =>
-    new Uint8Array([n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff]);
-  const unisci = (parti: Uint8Array[]) => {
-    const tot = parti.reduce((a, p) => a + p.length, 0);
-    const out = new Uint8Array(tot);
-    let i = 0;
-    for (const p of parti) { out.set(p, i); i += p.length; }
-    return out;
-  };
-
-  for (const { nome, dati } of voci) {
-    const nomeBytes = enc.encode(nome);
-    const crc = crc32(dati);
-
-    const locale = unisci([
-      u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
-      u32(crc), u32(dati.length), u32(dati.length),
-      u16(nomeBytes.length), u16(0), nomeBytes, dati,
-    ]);
-    pezzi.push(locale);
-
-    centrale.push(unisci([
-      u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
-      u32(crc), u32(dati.length), u32(dati.length),
-      u16(nomeBytes.length), u16(0), u16(0), u16(0), u16(0), u32(0),
-      u32(offset), nomeBytes,
-    ]));
-    offset += locale.length;
-  }
-
-  const dirCentrale = unisci(centrale);
-  const fine = unisci([
-    u32(0x06054b50), u16(0), u16(0), u16(voci.length), u16(voci.length),
-    u32(dirCentrale.length), u32(offset), u16(0),
-  ]);
-  return unisci([...pezzi, dirCentrale, fine]);
-}
-
-// ------------------------------------------------------------------- firma
+/** Il dispositivo chiama gli endpoint sotto questo prefisso. */
+export const WEB_SERVICE_PATH = '/wallet-apple';
 
 /**
- * Firma CMS staccata del manifest.
- *
- * "Staccata" vuol dire che il contenuto firmato non e' dentro la firma: iOS
- * rilegge manifest.json dallo zip e verifica che corrisponda. La catena deve
- * includere l'intermedio WWDR, altrimenti iOS non risale ad Apple e scarta il
- * pass.
+ * Il prefisso dei pass emessi fra il 21 e il 26 settembre 2026. Il
+ * `webServiceURL` sta scritto dentro il pass e non si puo' cambiare dopo:
+ * quei telefoni chiameranno sempre qui, quindi il servizio risponde anche
+ * a questo indirizzo.
  */
-export async function firmaManifest(c: AppleConfig, manifest: Uint8Array): Promise<Uint8Array> {
-  const cert = pkijs.Certificate.fromBER(pemToDer(c.certPem, 'CERTIFICATE'));
-  const wwdr = pkijs.Certificate.fromBER(pemToDer(c.wwdrPem, 'CERTIFICATE'));
+export const WEB_SERVICE_PATH_VECCHIO = '/api/apple/v1';
 
-  const chiave = await crypto.subtle.importKey(
-    'pkcs8',
-    pemToDer(c.keyPem, 'PRIVATE KEY') as unknown as ArrayBuffer,
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+// ------------------------------------------------------------------ impronte
+
+async function sha1Hex(data: Uint8Array): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-1', data.buffer as ArrayBuffer));
+  return [...d].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hmacHex(key: string, message: string): Promise<string> {
+  const k = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(key),
+    { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-
-  const firmato = new pkijs.SignedData({
-    version: 1,
-    encapContentInfo: new pkijs.EncapsulatedContentInfo({
-      eContentType: '1.2.840.113549.1.7.1', // data
-    }),
-    signerInfos: [
-      new pkijs.SignerInfo({
-        version: 1,
-        sid: new pkijs.IssuerAndSerialNumber({
-          issuer: cert.issuer,
-          serialNumber: cert.serialNumber,
-        }),
-      }),
-    ],
-    certificates: [cert, wwdr],
-  });
-
-  await firmato.sign(chiave, 0, 'SHA-256', manifest as unknown as ArrayBuffer);
-
-  const cms = new pkijs.ContentInfo({
-    contentType: '1.2.840.113549.1.7.2', // signedData
-    content: firmato.toSchema(true),
-  });
-  return new Uint8Array(cms.toSchema().toBER(false));
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, enc.encode(message)));
+  return [...sig].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// -------------------------------------------------------------- pass.json
+/**
+ * Token di autenticazione del pass.
+ *
+ * E' il segreto che il telefono rimanda a ogni richiesta di aggiornamento.
+ * Si deriva dal codice tessera invece di essere salvato riga per riga: un
+ * campo in meno da tenere allineato, e il token si ricalcola sempre uguale.
+ *
+ * Si deriva da una chiave a se' (`apple_auth_key`) e NON dal certificato:
+ * i certificati Apple scadono dopo un anno, e legare i token al certificato
+ * significherebbe che al primo rinnovo tutti i pass gia' consegnati
+ * smetterebbero di aggiornarsi.
+ */
+export const authToken = (c: AppleConfig, code: string) => hmacHex(c.authKey, `pass:${code}`);
 
-export function costruisciPassJson(c: AppleConfig, t: DatiTessera, authToken: string) {
-  const urlCliente = `${c.origin}/c/${t.code}`;
+/**
+ * Se il token che il telefono presenta e' valido per questa tessera: quello
+ * di adesso, o quello dei pass emessi con la firma vecchia.
+ */
+export async function tokenValido(c: AppleConfig, code: string, presentato: string): Promise<boolean> {
+  if (timingSafeEqual(presentato, await authToken(c, code))) return true;
+  if (!c.authSecretVecchio) return false;
+  return timingSafeEqual(presentato, await sha256Hex(`${c.authSecretVecchio}:${code}`));
+}
 
-  const riga = rigaProssimo(t.prossimo ?? null, !!t.ciSonoPremi);
-  const ausiliari = riga
-    ? [{ key: 'prossimo', label: ETICHETTE.prossimo.toUpperCase(), value: riga }]
-    : [];
+// ----------------------------------------------------------------- pass.json
 
-  return {
+export type CardData = DatiTessera;
+
+export async function passJson(c: AppleConfig, card: CardData): Promise<string> {
+  const url = `${c.origin}/c/${card.code}`;
+  const riga = rigaDi(card);
+
+  const pass: Record<string, unknown> = {
     formatVersion: 1,
     passTypeIdentifier: c.passTypeId,
     teamIdentifier: c.teamId,
-    serialNumber: t.code,
     organizationName: c.storeName,
+    // description non e' decorativa: la leggono le tecnologie di accessibilita'
     description: `Tessera punti ${c.storeName}`,
-    // Niente `logoText`: il logo e' gia' la scritta «Il Golosone», e il nome
-    // accanto la ripeterebbe due volte in dieci centimetri.
+    serialNumber: card.code,
 
+    // Niente logoText: il nome del negozio e' gia' dentro il logo, e ripeterlo
+    // accanto lo raddoppia sulla stessa riga.
+    //
+    // I colori sono quelli dell'insegna, gli stessi della tessera Google e
+    // dell'icona dell'app degli ordini: stanno in src/pass-comune.ts, e lo
+    // script della grafica li prende da li'.
     backgroundColor: COLORI.fondo.rgb,
     foregroundColor: COLORI.testo.rgb,
     labelColor: COLORI.oro.rgb,
 
-    // Presenti fin dal primo pass: aggiungerli dopo non servirebbe a niente,
-    // perche' i pass gia' scaricati resterebbero senza.
-    webServiceURL: `${c.origin}/api/apple/v1`,
-    authenticationToken: authToken,
-
-    barcodes: [{
-      format: 'PKBarcodeFormatQR',
-      message: urlCliente,
-      // iso-8859-1 e' quella che i lettori si aspettano: l'URL e' comunque
-      // tutto ASCII, quindi non si perde niente.
-      messageEncoding: 'iso-8859-1',
-      altText: t.code,
-    }],
+    // Senza queste due chiavi il pass nasce congelato e non c'e' modo di
+    // aggiungerle dopo: i pass gia' nel telefono resterebbero fermi per
+    // sempre. Vanno messe fin dal primo pass emesso.
+    webServiceURL: `${c.origin}${WEB_SERVICE_PATH}`,
+    authenticationToken: await authToken(c, card.code),
 
     storeCard: {
-      primaryFields: [{ key: 'punti', label: ETICHETTE.punti.toUpperCase(), value: t.points }],
-      secondaryFields: [{ key: 'nome', label: ETICHETTE.intestatario.toUpperCase(), value: t.firstName ?? 'Cliente' }],
-      auxiliaryFields: ausiliari,
+      // Le parole sono le stesse della tessera Google (src/pass-comune.ts).
+      primaryFields: [{ key: 'punti', label: ETICHETTE.punti, value: card.points }],
+      secondaryFields: [
+        { key: 'intestatario', label: ETICHETTE.intestatario, value: card.firstName ?? 'Cliente' },
+      ],
+      auxiliaryFields: riga ? [{ key: 'traguardo', label: ETICHETTE.prossimo, value: riga }] : [],
       backFields: [
-        { key: 'codice', label: ETICHETTE.codice, value: t.code },
+        { key: 'codice', label: ETICHETTE.codice, value: card.code },
+        { key: 'pagina', label: 'La tua pagina', value: url },
         {
-          key: 'saldo',
-          label: 'Il tuo saldo aggiornato',
-          value: urlCliente,
-          attributedValue: `<a href="${urlCliente}">Apri la tua pagina</a>`,
-        },
-        {
-          key: 'uso',
-          label: 'Come si usa',
-          value: 'Mostra il codice in cassa: vale come la tessera di cartoncino.',
+          key: 'nota',
+          label: 'Come funziona',
+          value: 'Mostra il codice in cassa. I punti si aggiornano da soli.',
         },
       ],
     },
+
+    barcodes: [{
+      format: 'PKBarcodeFormatQR',
+      message: url,
+      // iso-8859-1 e' l'unica codifica che iOS accetta qui
+      messageEncoding: 'iso-8859-1',
+      altText: card.code,
+    }],
   };
+
+  return JSON.stringify(pass, null, 2);
 }
 
-// ---------------------------------------------------------- pacchetto finale
+// -------------------------------------------------------------------- pkpass
 
-export async function creaPkpass(
+/**
+ * Le immagini del pass stanno in `public/pass/`, gia' con i nomi che Apple si
+ * aspetta: qui si copiano dentro l'archivio senza rinominare niente.
+ *
+ * Sono in `public/` perche' le serve la CDN, ma al pass non basta che siano
+ * raggiungibili: ne servono i BYTE, da mettere nello ZIP. Leggerli dal binding
+ * degli asset evita di uscire in rete verso noi stessi.
+ *
+ * Tre densita' per immagine perche' gli iPhone sono tutti a 3x: mandare solo
+ * la versione piccola significa mandare un'immagine sfocata.
+ *
+ * `icon.png` e' l'unica obbligatoria: senza, iOS rifiuta il pass e non dice
+ * perche'. Le altre, se mancano, lasciano solo una tessera piu' spoglia,
+ * quindi si prosegue lo stesso.
+ *
+ * La STRISCIA e' quella che fa la differenza fra una tessera e un rettangolo
+ * di colore piatto: e' la fascia dietro il numero dei punti.
+ */
+/**
+ * A sinistra il nome dentro il pass, a destra quello del file salvato.
+ *
+ * Non coincidono per un motivo preciso: Apple pretende `@2x` e `@3x`, ma la
+ * CDN di Cloudflare non serve una chiocciola cosi' com'e', risponde 307 e
+ * rimanda alla versione con `%40`. Qui un 307 non e' `ok`, quindi l'immagine
+ * verrebbe scartata in silenzio - e un pass senza `icon.png` iOS lo rifiuta
+ * senza dire perche'.
+ *
+ * Si potrebbe codificare la chiocciola nella richiesta, ma e' piu' solido non
+ * averla affatto nei nomi dei file: la traduzione avviene qui, una volta, in
+ * un punto che si legge.
+ *
+ * In locale il problema non si vede: e' una differenza fra il runtime di
+ * sviluppo e la CDN vera.
+ */
+const IMMAGINI_PASS: [nelPass: string, file: string][] = [
+  ['icon.png', 'icon-1x.png'], ['icon@2x.png', 'icon-2x.png'], ['icon@3x.png', 'icon-3x.png'],
+  ['logo.png', 'logo-1x.png'], ['logo@2x.png', 'logo-2x.png'], ['logo@3x.png', 'logo-3x.png'],
+  ['strip.png', 'strip-1x.png'], ['strip@2x.png', 'strip-2x.png'], ['strip@3x.png', 'strip-3x.png'],
+];
+
+async function immagini(assets: Fetcher | undefined, origin: string): Promise<ZipEntry[]> {
+  if (!assets) return [];
+
+  const leggi = async ([nelPass, file]: [string, string]): Promise<ZipEntry | null> => {
+    try {
+      const res = await assets.fetch(`${origin}/pass/${file}`);
+      if (!res.ok) return null;
+      return { name: nelPass, data: new Uint8Array(await res.arrayBuffer()) };
+    } catch {
+      return null;
+    }
+  };
+
+  // in parallelo: sono nove richieste, e in fila allungherebbero ogni pass
+  const lette = await Promise.all(IMMAGINI_PASS.map(leggi));
+  return lette.filter((x): x is ZipEntry => x !== null);
+}
+
+/** Costruisce e firma il .pkpass. Restituisce i byte pronti da servire. */
+export async function buildPkpass(
   c: AppleConfig,
-  t: DatiTessera,
-  authToken: string,
+  card: CardData,
+  assets?: Fetcher,
 ): Promise<Uint8Array> {
-  const file: { nome: string; dati: Uint8Array }[] = [];
+  const files: ZipEntry[] = [
+    { name: 'pass.json', data: enc.encode(await passJson(c, card)) },
+    ...(await immagini(assets, c.origin)),
+  ];
 
-  const passJson = enc.encode(JSON.stringify(costruisciPassJson(c, t, authToken)));
-  file.push({ nome: 'pass.json', dati: passJson });
-
-  for (const [nome, b64] of Object.entries(IMMAGINI_PASS)) {
-    file.push({ nome, dati: b64ToBytes(b64) });
-  }
-
-  // Il manifest elenca lo SHA-1 di TUTTI i file tranne se stesso e la firma.
+  // Il manifesto elenca l'impronta di ogni file, tranne se stesso e la firma.
   const manifest: Record<string, string> = {};
-  for (const f of file) manifest[f.nome] = await sha1Hex(f.dati);
-  const manifestBytes = enc.encode(JSON.stringify(manifest));
+  for (const f of files) manifest[f.name] = await sha1Hex(f.data);
+  const manifestBytes = enc.encode(JSON.stringify(manifest, null, 2));
 
-  const firma = await firmaManifest(c, manifestBytes);
+  const signature = await signDetached(c, manifestBytes);
 
-  return creaZip([
-    ...file,
-    { nome: 'manifest.json', dati: manifestBytes },
-    { nome: 'signature', dati: firma },
+  return zip([
+    ...files,
+    { name: 'manifest.json', data: manifestBytes },
+    { name: 'signature', data: signature },
   ]);
 }
 
 // ------------------------------------------------------------ configurazione
 
-export type EsitoApple = { config: AppleConfig | null; problema: string | null };
+export type ConfigEsito = { config: AppleConfig | null; problema: string | null };
+
+type SecretShape = {
+  passTypeId?: string;
+  teamId?: string;
+  cert?: string;
+  key?: string;
+  wwdr?: string;
+  apnsKeyId?: string;
+  apnsKey?: string;
+};
 
 /**
- * Legge la configurazione Apple dai segreti del Worker.
+ * Il segreto e' un JSON con dentro i pezzi gia' in base64, senza le
+ * intestazioni `-----BEGIN-----` e senza a capo.
  *
- * Certificato e chiave arrivano in base64: sono PEM multiriga, e passarli
- * crudi a una variabile d'ambiente e' il modo piu' rapido per rovinarli.
+ * Al contrario di quello di Google, qui il JSON NON viene ricodificato in
+ * base64: un PEM e' gia' base64, e incartarlo una seconda volta lo gonfia di
+ * un terzo. Con il tetto di 5,1 kB per segreto quel terzo e' la differenza
+ * fra stare dentro e non starci.
+ *
+ * Si accetta comunque anche la forma base64, perche' non costa niente e un
+ * segreto caricato a mano potrebbe arrivare cosi'.
  */
-export function leggiConfigApple(
-  env: { APPLE_PASS_CERT?: string; APPLE_PASS_KEY?: string; APPLE_WWDR_CERT?: string },
+function parseSecret(raw: string): SecretShape | null {
+  const tentativi = [raw];
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw) && raw.length > 100) {
+    try {
+      tentativi.push(atob(raw.replace(/\s+/g, '')));
+    } catch { /* non era base64: si prosegue */ }
+  }
+  for (const t of tentativi) {
+    try {
+      const o = JSON.parse(t) as SecretShape;
+      if (o?.cert && o?.key) return o;
+    } catch { /* prova il prossimo formato */ }
+  }
+  return null;
+}
+
+export type AppleEnv = {
+  APPLE_WALLET_CERT?: string;
+  APPLE_PASS_CERT?: string;
+  APPLE_PASS_KEY?: string;
+  APPLE_WWDR_CERT?: string;
+};
+
+/** Un PEM arrivato crudo o in base64: si restituisce sempre crudo. */
+function pemDa(v: string | undefined): string | null {
+  if (!v) return null;
+  if (v.includes('-----BEGIN')) return v;
+  try {
+    const decodificato = atob(v.replace(/\s+/g, ''));
+    return decodificato.includes('-----BEGIN') ? decodificato : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Il certificato puo' arrivare in due forme, perche' il progetto e' stato
+ * portato avanti per qualche giorno su due strade separate, e in produzione
+ * sono rimasti i segreti di tutte e due:
+ *
+ *   * `APPLE_PASS_CERT` + `APPLE_PASS_KEY` (+ `APPLE_WWDR_CERT`), con Pass
+ *     Type ID e Team ID nelle impostazioni. E' la coppia con cui la tessera
+ *     e' stata provata dall'app degli ordini: quando c'e', vince.
+ *   * `APPLE_WALLET_CERT`, il pacchetto JSON di `npm run apple:certificato`.
+ *     Se c'e' anche l'altra coppia, da qui si prende solo la chiave APNs.
+ */
+function leggiCertificato(
+  env: AppleEnv,
+  settings: Record<string, string>,
+): SecretShape | 'illeggibile' | null {
+  const pacchetto = env.APPLE_WALLET_CERT ? parseSecret(env.APPLE_WALLET_CERT) : null;
+  const cert = pemDa(env.APPLE_PASS_CERT);
+  const key = pemDa(env.APPLE_PASS_KEY);
+
+  if (cert && key) {
+    return {
+      passTypeId: settings.apple_pass_type_id ?? pacchetto?.passTypeId,
+      teamId: settings.apple_team_id ?? pacchetto?.teamId,
+      cert,
+      key,
+      wwdr: pemDa(env.APPLE_WWDR_CERT) ?? pacchetto?.wwdr,
+      apnsKeyId: pacchetto?.apnsKeyId,
+      apnsKey: pacchetto?.apnsKey,
+    };
+  }
+  if (env.APPLE_WALLET_CERT) return pacchetto ?? 'illeggibile';
+  return null;
+}
+
+export function readConfigDetailed(
+  env: AppleEnv,
   settings: Record<string, string>,
   origin: string,
-): EsitoApple {
-  const forse = (v: string | undefined) => {
-    if (!v) return null;
-    const grezzo = v.includes('-----BEGIN') ? v : (() => { try { return atob(v.replace(/\s+/g, '')); } catch { return ''; } })();
-    return grezzo.includes('-----BEGIN') ? grezzo : null;
-  };
+): ConfigEsito {
+  const s = leggiCertificato(env, settings);
+  if (!s) {
+    return { config: null, problema: 'Manca il certificato: npm run apple:certificato' };
+  }
+  if (s === 'illeggibile') {
+    return {
+      config: null,
+      problema:
+        'Il certificato non e leggibile: deve essere il pacchetto prodotto da ' +
+        'npm run apple:certificato, codificato in base64.',
+    };
+  }
+  if (!s.passTypeId || !s.teamId) {
+    return {
+      config: null,
+      problema: 'Nel certificato mancano il Pass Type ID o il Team ID. Rilancia npm run apple:certificato.',
+    };
+  }
 
-  const certPem = forse(env.APPLE_PASS_CERT);
-  const keyPem = forse(env.APPLE_PASS_KEY);
-  const wwdrPem = forse(env.APPLE_WWDR_CERT);
-  const passTypeId = settings.apple_pass_type_id;
-  const teamId = settings.apple_team_id;
-
-  const mancanti: string[] = [];
-  if (!certPem) mancanti.push('certificato (APPLE_PASS_CERT)');
-  if (!keyPem) mancanti.push('chiave privata (APPLE_PASS_KEY)');
-  if (!wwdrPem) mancanti.push('intermedio Apple (APPLE_WWDR_CERT)');
-  if (!passTypeId) mancanti.push('Pass Type ID');
-  if (!teamId) mancanti.push('Team ID');
-
-  if (mancanti.length) {
-    return { config: null, problema: `Manca: ${mancanti.join(', ')}.` };
+  // La chiave dei token non e' un segreto del Worker ma una riga in settings:
+  // non da' accesso a emettere tessere, protegge solo la lettura di un saldo
+  // che il QR gia' mostra a chiunque abbia il link. Deve pero' sopravvivere al
+  // rinnovo annuale del certificato, quindi sta scritta da un'altra parte.
+  const authKey = settings.apple_auth_key;
+  if (!authKey) {
+    return { config: null, problema: 'Manca la chiave dei token: si genera da sola al primo uso.' };
   }
 
   return {
     config: {
-      certPem: certPem!,
-      keyPem: keyPem!,
-      wwdrPem: wwdrPem!,
-      passTypeId: passTypeId!,
-      teamId: teamId!,
+      passTypeId: s.passTypeId,
+      teamId: s.teamId,
+      certPem: s.cert!,
+      keyPem: s.key!,
+      // l'intermedio viaggia nel codice, ma se il segreto ne porta uno suo
+      // vince quello: serve il giorno in cui Apple cambia intermedio
+      wwdrPem: s.wwdr ?? WWDR_G4,
+      apns: s.apnsKeyId && s.apnsKey ? { keyId: s.apnsKeyId, keyPem: s.apnsKey } : null,
       storeName: settings.store_name ?? 'Pasticceria',
       origin,
+      authKey,
+      authSecretVecchio: settings.apple_auth_secret,
     },
     problema: null,
   };
+}
+
+export function readConfig(
+  env: AppleEnv,
+  settings: Record<string, string>,
+  origin: string,
+): AppleConfig | null {
+  return readConfigDetailed(env, settings, origin).config;
 }

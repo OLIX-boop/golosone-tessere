@@ -21,7 +21,7 @@
  * fermarsi perche' Google non risponde.
  */
 
-import { COLORI, ETICHETTE, VERSIONE_IMMAGINI, rigaProssimo, type Prossimo } from './pass-comune.ts';
+import { COLORI, ETICHETTE, rigaDi, type DatiTessera } from './pass-comune.ts';
 
 export type ServiceAccount = { client_email: string; private_key: string };
 
@@ -32,6 +32,18 @@ export type WalletConfig = {
   classSuffix: string;
   storeName: string;
   origin: string;
+  /**
+   * Impronta corta del logo, da appendere al suo indirizzo.
+   *
+   * Google copia l'immagine quando crea la classe e poi non la riguarda piu':
+   * sostituire il file lascia le tessere gia' emesse col logo vecchio, e il
+   * riallineamento non se ne accorge perche' confronta gli INDIRIZZI, che
+   * sono rimasti identici. Legando l'indirizzo al contenuto, cambiare il logo
+   * cambia anche l'indirizzo, e la classe si riallinea da sola.
+   */
+  logoVersion?: string;
+  /** La stessa impronta, per il logo largo. */
+  logoLargoVersion?: string;
 };
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -123,12 +135,51 @@ export const objectId = (c: WalletConfig, code: string) =>
   // rispetta gia' questo vincolo
   `${c.issuerId}.${c.classSuffix}_${code}`;
 
+/**
+ * Impronta corta di un'immagine servita dal Worker.
+ *
+ * Quattro byte bastano: non serve resistere a nessun attacco, serve solo che
+ * l'indirizzo cambi quando cambia l'immagine.
+ */
+export async function impronta(
+  assets: Fetcher | undefined,
+  origin: string,
+  file: string,
+): Promise<string | undefined> {
+  if (!assets) return undefined;
+  try {
+    const res = await assets.fetch(`${origin}/${file}`);
+    if (!res.ok) return undefined;
+    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', await res.arrayBuffer()));
+    return [...d.slice(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    // l'immagine non si legge: si prosegue senza versione, come prima
+    return undefined;
+  }
+}
+
+export const logoVersion = (assets: Fetcher | undefined, origin: string) =>
+  impronta(assets, origin, 'logo.png');
+
+/** Le impronte di tutte e due le immagini, da mettere nella configurazione. */
+export async function conImpronte(c: WalletConfig, assets: Fetcher | undefined): Promise<WalletConfig> {
+  const [logo, largo] = await Promise.all([
+    impronta(assets, c.origin, 'logo.png'),
+    impronta(assets, c.origin, 'logo-largo.png'),
+  ]);
+  return { ...c, logoVersion: logo, logoLargoVersion: largo };
+}
+
+const indirizzo = (c: WalletConfig, file: string, versione?: string) =>
+  `${c.origin}/${file}${versione ? `?v=${versione}` : ''}`;
+
+export const logoUri = (c: WalletConfig) => indirizzo(c, 'logo.png', c.logoVersion);
+export const logoLargoUri = (c: WalletConfig) => indirizzo(c, 'logo-largo.png', c.logoLargoVersion);
+
 /** Un'immagine servita dal Worker stesso, cosi' non serve ospitarla altrove. */
-function immagine(c: WalletConfig, file: string) {
+function immagine(c: WalletConfig, uri: string) {
   return {
-    // La versione in coda all'indirizzo: Google tiene le immagini in cache
-    // per indirizzo, e senza cambiarlo continuerebbe a mostrare le vecchie.
-    sourceUri: { uri: `${c.origin}/${file}?v=${VERSIONE_IMMAGINI}` },
+    sourceUri: { uri },
     contentDescription: {
       defaultValue: { language: 'it', value: `Logo ${c.storeName}` },
     },
@@ -147,10 +198,10 @@ export function aspetto(c: WalletConfig) {
     // Obbligatorio: senza, Google rifiuta la classe con
     // "LoyaltyClass cannot be created without a program logo". Lo ritaglia
     // a cerchio e lo usa negli elenchi e nelle notifiche.
-    programLogo: immagine(c, 'logo.png'),
+    programLogo: immagine(c, logoUri(c)),
     // Prende il posto del cerchio in cima alla tessera: e' il marchio intero,
     // in alto a sinistra come su Apple.
-    wideProgramLogo: immagine(c, 'logo-largo.png'),
+    wideProgramLogo: immagine(c, logoLargoUri(c)),
     accountNameLabel: ETICHETTE.intestatario,
     accountIdLabel: ETICHETTE.codice,
   };
@@ -252,17 +303,11 @@ export function classeAllineata(corrente: Record<string, unknown>, voluto: Retur
   );
 }
 
-export type DatiPass = {
-  code: string;
-  firstName: string | null;
-  points: number;
-  prossimo?: Prossimo;
-  ciSonoPremi?: boolean;
-};
+export type DatiPass = DatiTessera;
 
 /** Saldo e prossimo premio: la parte dell'oggetto che cambia a ogni movimento. */
 function saldo(card: DatiPass) {
-  const riga = rigaProssimo(card.prossimo ?? null, !!card.ciSonoPremi);
+  const riga = rigaDi(card);
   return {
     loyaltyPoints: { label: ETICHETTE.punti, balance: { int: card.points } },
     // Come la riga ausiliaria di Apple. Quando non c'e' non si manda: il

@@ -4,26 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Titolare - Tessere punti</title>
+<link rel="stylesheet" href="/tema.css">
 <style>
-  :root{
-    --bg:#f4f1ec; --card:#fff; --ink:#2b2420; --ink2:#6b6058; --muted:#8a7f76;
-    --line:#e5ded5; --accent:#8c4a2f; --accent-ink:#fff;
-    --ok:#2f7a4d; --ok-bg:#e8f5ed; --err:#b3261e; --err-bg:#fdeceb;
-    /* Colore dei dati, separato da quello del marchio: il marrone della
-       pasticceria ha croma troppo bassa e come barra leggerebbe grigio.
-       Questo arancio e' validato su fondo chiaro E scuro. */
-    --dato:#d95926;
-    --griglia:#ece5dc;
-    --radius:14px;
-  }
-  /* Il tema scuro e' scelto, non ribaltato: stesso arancio, verificato
-     anche contro il fondo scuro. */
-  @media (prefers-color-scheme: dark){
-    :root{ --bg:#191513; --card:#241f1c; --ink:#f2ece6; --ink2:#c2b5a9; --muted:#a6988c;
-           --line:#38302b; --accent:#d98b63; --accent-ink:#2b2420;
-           --ok:#7bc79a; --ok-bg:#1e3328; --err:#f2b8b5; --err-bg:#3a1f1d;
-           --dato:#d95926; --griglia:#2f2825; }
-  }
+  /* La tavolozza sta in tema.css, caricato qui sopra. */
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
        font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -245,6 +228,13 @@
       </div>
 
       <div class="card">
+        <h2>Apple Wallet</h2>
+        <!-- Qui non c'e' niente da incollare: Pass Type ID e Team ID stanno
+             dentro il certificato, quindi non possono discordare. -->
+        <p class="hint" id="appleStato"></p>
+      </div>
+
+      <div class="card">
         <h2>PIN di cassa</h2>
         <p class="hint">Cambiandolo, tutte le casse aperte vengono disconnesse e dovranno
            rientrare col nuovo PIN.</p>
@@ -259,6 +249,14 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+/**
+ * Il nome del cliente lo scrive il CLIENTE, dal proprio telefono, da quando
+ * le tessere si attivano col QR. Qui finisce dentro innerHTML: senza questa
+ * funzione, un nome come <img src=x onerror=...> verrebbe eseguito dentro un
+ * pannello gia' sbloccato, che e' il posto peggiore.
+ */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const stato = { report: null, premi: [] };
 
 let bannerTimer;
@@ -287,6 +285,9 @@ async function api(path, opts = {}) {
 async function boot() {
   const s = await api('/api/titolare/stato');
   stato.walletSegreto = s.walletSegreto;
+  stato.appleSegreto = s.appleSegreto;
+  stato.appleProblema = s.appleProblema;
+  stato.applePush = s.applePush;
   $('shopName').textContent = s.storeName;
   document.title = 'Titolare - ' + s.storeName;
 
@@ -540,8 +541,8 @@ async function caricaClienti(q = '') {
     ? `<thead><tr><th>Cliente</th><th>Tessera</th><th class="num">Punti</th>
        <th class="num">Totali</th><th></th></tr></thead><tbody>` +
       d.clienti.map((c) => `<tr class="${c.active ? '' : 'spenta'}">
-        <td>${c.first_name ?? '(vergine)'} ${c.last_name ?? ''}</td>
-        <td class="code">${c.code}</td>
+        <td>${esc(c.first_name ?? '(vergine)')} ${esc(c.last_name ?? '')}</td>
+        <td class="code">${esc(c.code)}</td>
         <td class="num">${c.points_balance}</td>
         <td class="num">${c.points_lifetime}</td>
         <td class="num"><button class="ghost" style="padding:5px 10px;font-size:13px"
@@ -573,6 +574,7 @@ async function caricaImpostazioni() {
   $('setShowRewards').checked = (impostazioni.show_rewards_to_customer ?? '1') !== '0';
   $('setIssuer').value = impostazioni.wallet_issuer_id ?? '';
   aggiornaStatoWallet(impostazioni.wallet_issuer_id);
+  aggiornaStatoApple();
 }
 
 /**
@@ -591,6 +593,25 @@ function aggiornaStatoWallet(issuer) {
     el.textContent = 'Manca la chiave del service account: wrangler secret put GOOGLE_WALLET_SA';
   } else {
     el.textContent = 'Manca l ID emittente qui sotto.';
+  }
+}
+
+/**
+ * Apple ha tre stati e non due: configurato e con il push, configurato ma
+ * senza (il pass si aggiorna solo quando il cliente lo tira giu' a mano), o
+ * assente. Dire quale dei tre e' costa una riga e risparmia un'indagine.
+ */
+function aggiornaStatoApple() {
+  const el = $('appleStato');
+  if (!el) return;
+  if (!stato.appleSegreto) {
+    el.textContent = 'Non configurato. Il certificato si carica con: npm run apple:certificato';
+  } else if (stato.appleProblema) {
+    el.textContent = stato.appleProblema;
+  } else if (!stato.applePush) {
+    el.textContent = 'Attivo, ma senza notifiche: il cliente vede i punti nuovi solo tirando giu il pass. Per il push serve la chiave APNs.';
+  } else {
+    el.textContent = 'Attivo: il pulsante "Aggiungi ad Apple Wallet" compare ai clienti e i punti si aggiornano da soli.';
   }
 }
 

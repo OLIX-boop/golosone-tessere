@@ -19,6 +19,16 @@ service-account*.json
 *.pem
 *.p12
 *.key
+# Richiesta di firma e certificato Apple: non sono segreti (il segreto e' la
+# chiave qui sopra), ma sono roba di questa macchina e non del progetto.
+*.csr
+*.cer
+
+# Chiave APNs. Questa SI' e' un segreto, e per giunta Apple la fa scaricare
+# una volta sola: si carica come segreto del Worker e si tiene da parte, mai
+# nel repository.
+*.p8
+AuthKey_*
 
 # ---- Sessioni di Claude Code ----
 # I trascritti contengono per intero i comandi eseguiti e il loro output,
@@ -38,5 +48,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Chiavi e certificati Apple: non devono MAI finire nel repository
+# Chiavi e certificati Apple, tutti insieme: le regole qui sopra prendono
+# .pem e .cer, ma non la richiesta di firma ne' l'intermedio in .der.
 certificati/

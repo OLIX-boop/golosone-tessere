@@ -1,12 +1,5 @@
-/* Pagina cliente: si apre dal QR, quindi e' pensata prima per il telefono. */
-:root{
-  --bg:#f4f1ec; --card:#fff; --ink:#2b2420; --muted:#8a7f76;
-  --line:#e5ded5; --accent:#8c4a2f; --ok:#2f7a4d; --ok-bg:#e8f5ed;
-}
-@media (prefers-color-scheme: dark){
-  :root{ --bg:#191513; --card:#241f1c; --ink:#f2ece6; --muted:#a6988c;
-         --line:#38302b; --accent:#d98b63; --ok:#7bc79a; --ok-bg:#1e3328; }
-}
+/* Pagina cliente: si apre dal QR, quindi e' pensata prima per il telefono.
+   I colori arrivano da tema.css, che la pagina carica prima di questo file. */
 *{box-sizing:border-box}
 body{
   margin:0;background:var(--bg);color:var(--ink);
@@ -50,8 +43,8 @@ footer p{margin:.2em 0}
 footer .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
              font-size:24px;letter-spacing:.22em;color:var(--ink)}
 
-/* Tessera nel telefono */
-.telefono .bottone{
+/* Pulsante pieno: lo usano i due Wallet e il modulo di attivazione. */
+.bottone{
   display:inline-block;background:var(--accent);color:var(--card);
   text-decoration:none;font-weight:600;padding:13px 20px;border-radius:10px;
   margin:.4em 0 0;
@@ -59,3 +52,24 @@ footer .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 .telefono ol.passi{margin:.6em 0 0;padding-left:1.3em;color:var(--ink);font-size:15px}
 .telefono ol.passi li{margin:.3em 0;padding-left:.2em}
 .telefono ol.passi b{font-weight:600}
+
+/* ---- Attivazione ----
+   E' la prima cosa che vede chi inquadra una tessera appena consegnata: da
+   qui si registra da solo, senza passare dalla cassa. I campi sono grandi
+   perche' si compilano in piedi, con una mano, davanti al banco. */
+.modulo{display:flex;flex-direction:column;gap:6px}
+.modulo label{font-size:14px;font-weight:600;margin-top:14px}
+.modulo label:first-child{margin-top:0}
+.facolt{font-weight:400;color:var(--muted)}
+/* font:inherit tiene i 16px del corpo: sotto quella misura iOS ingrandisce
+   la pagina appena si tocca il campo, e il modulo salta via dallo schermo. */
+.modulo input[type=text],.modulo input[type=tel]{
+  font:inherit;width:100%;padding:13px 14px;border-radius:10px;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink);
+}
+.modulo input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.modulo .bottone{width:100%;border:0;font:inherit;font-weight:600;
+                 cursor:pointer;margin-top:20px;text-align:center}
+.modulo .bottone:disabled{opacity:.55;cursor:progress}
+.errore{color:var(--err)}
+.errore:empty{display:none}

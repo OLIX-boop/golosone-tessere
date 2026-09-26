@@ -13,8 +13,23 @@ import {
 import { isValidCode, normalizeCode, parseInput } from './codes.ts';
 import { parsePoints, pointsLabel } from './points.ts';
 import { qrDataUrl, qrSvg } from './qr.ts';
-import { ensureClass, readConfig, readConfigDetailed, saveLink, upsertObject } from './google-wallet.ts';
-import { creaPkpass, leggiConfigApple } from './apple-wallet.ts';
+import {
+  conImpronte,
+  ensureClass,
+  readConfig,
+  readConfigDetailed,
+  saveLink,
+  upsertObject,
+} from './google-wallet.ts';
+import {
+  WEB_SERVICE_PATH,
+  WEB_SERVICE_PATH_VECCHIO,
+  buildPkpass,
+  tokenValido,
+  readConfig as readAppleConfig,
+  readConfigDetailed as readAppleConfigDetailed,
+} from './apple-wallet.ts';
+import { pushPassUpdate } from './apns.ts';
 import {
   activateCard,
   cardStock,
@@ -39,6 +54,11 @@ import {
   searchCustomers,
   setSetting,
   voidTransaction,
+  appleUpdatedSerials,
+  applePushTokens,
+  forgetApplePushTokens,
+  registerAppleDevice,
+  unregisterAppleDevice,
   type Customer,
   type Env,
 } from './db.ts';
@@ -174,6 +194,28 @@ app.post('/api/logout', async (c) => {
   return c.json({ ok: true });
 });
 
+// ------------------------------------------------ dati comuni ai due Wallet
+
+/**
+ * La tessera nella forma che serve ai due Wallet: saldo, nome e premio piu'
+ * vicino. Da un posto solo, perche' Apple e Google devono dire la stessa
+ * cosa: prima uno dei due mostrava il prossimo premio e l'altro no.
+ *
+ * Se il titolare ha scelto di non mostrare i premi ai clienti, non li
+ * mostrano nemmeno le tessere nel telefono.
+ */
+async function datiTessera(env: Env, card: Customer, settings: Record<string, string>) {
+  const mostraPremi = (settings.show_rewards_to_customer ?? '1') !== '0';
+  const premi = mostraPremi ? await listRewards(env.DB) : [];
+  return {
+    code: card.code,
+    firstName: card.first_name,
+    points: card.points_balance,
+    nextReward: premi.find((r) => r.points_cost > card.points_balance) ?? null,
+    ciSonoPremi: premi.length > 0,
+  };
+}
+
 // ----------------------------------------------------------- Google Wallet
 
 /**
@@ -184,18 +226,48 @@ app.post('/api/logout', async (c) => {
  * indietro finche' il cliente non riapre la sua pagina.
  */
 function aggiornaPassInSottofondo(c: any, card: Customer) {
-  if (!c.env.GOOGLE_WALLET_SA) return; // non configurato: nemmeno una query in piu'
+  const google = !!c.env.GOOGLE_WALLET_SA;
+  const apple = !!(c.env.APPLE_WALLET_CERT || c.env.APPLE_PASS_CERT);
+  if (!google && !apple) return; // non configurato: nemmeno una query in piu'
+
   c.executionCtx?.waitUntil(
     (async () => {
-      try {
-        const cfg = readConfig(c.env, await getSettings(c.env.DB), new URL(c.req.url).origin);
-        if (!cfg) return;
-        // Dagli stessi dati della tessera Apple: col saldo cambia anche il
-        // prossimo premio, e le due tessere devono dire la stessa cosa.
-        const t = await datiPerPass(c.env, card.code);
-        if (t) await upsertObject(cfg, t.dati);
-      } catch (err) {
-        console.error('Aggiornamento Google Wallet fallito:', err);
+      const settings = await getSettings(c.env.DB);
+      const origin = new URL(c.req.url).origin;
+
+      if (google) {
+        try {
+          const cfg = readConfig(c.env, settings, origin);
+          // Col saldo cambia anche il prossimo premio: si manda tutto.
+          if (cfg) await upsertObject(cfg, await datiTessera(c.env, card, settings));
+        } catch (err) {
+          console.error('Aggiornamento Google Wallet fallito:', err);
+        }
+      }
+
+      // Apple funziona al contrario di Google: non si riscrive il pass sul
+      // server di qualcun altro, si sveglia il telefono e sara' lui a
+      // richiedere il pass nuovo. Se nessuno ha installato la tessera non
+      // c'e' niente da svegliare e la query finisce qui.
+      if (apple) {
+        try {
+          const cfg = readAppleConfig(c.env, settings, origin);
+          if (cfg?.apns) {
+            const tokens = await applePushTokens(c.env.DB, card.code);
+            if (tokens.length > 0) {
+              const esito = await pushPassUpdate(
+                { ...cfg.apns, teamId: cfg.teamId },
+                cfg.passTypeId,
+                tokens,
+              );
+              if (esito.morti.length > 0) {
+                await forgetApplePushTokens(c.env.DB, esito.morti);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Sveglia del pass Apple fallita:', err);
+        }
       }
     })(),
   );
@@ -326,6 +398,87 @@ app.get('/api/cassa/batches', async (c) =>
   c.json({ ok: true, batches: await listBatches(c.env.DB) }),
 );
 
+// ------------------------------------------------------- tessera smarrita
+
+/**
+ * Del cliente esce solo quel che serve a riconoscerlo sullo schermo della
+ * cassa. Email e consensi restano dove sono: non c'entrano niente con il
+ * ritrovare una tessera.
+ */
+const perSchermo = (c: Customer) => ({
+  code: c.code,
+  first_name: c.first_name,
+  last_name: c.last_name,
+  points_balance: c.points_balance,
+});
+
+/**
+ * "Ho perso il cartoncino": dal numero di telefono al cliente.
+ *
+ * Accetta anche un nome, perche' non tutti hanno lasciato il numero - da
+ * quando le tessere si attivano dal telefono del cliente, il telefono e'
+ * facoltativo e qualcuno lo salta.
+ *
+ * Restituisce sempre un ELENCO, anche di uno solo: in una famiglia lo stesso
+ * numero copre piu' tessere, e scegliere la persona sbagliata significa
+ * mostrare a un cliente i punti di un altro.
+ */
+app.get('/api/cassa/smarrita', async (c) => {
+  const parsed = parseInput(c.req.query('q') ?? '');
+  if (parsed.type === 'empty') return c.json(fail('Scrivi il numero di telefono del cliente'), 400);
+
+  if (parsed.type === 'code') {
+    const code = normalizeCode(parsed.value);
+    const card = isValidCode(code) ? await findByCode(c.env.DB, code) : null;
+    if (!card?.activated_at) return c.json(fail('Tessera non trovata'), 404);
+    return c.json({ ok: true, clienti: [perSchermo(card)] });
+  }
+
+  const matches = await searchCustomers(
+    c.env.DB,
+    parsed.type === 'phone' ? { phone: parsed.value } : { name: parsed.value },
+  );
+  if (matches.length === 0) {
+    return c.json(
+      fail(
+        parsed.type === 'phone'
+          ? 'Nessun cliente con questo numero. Prova col nome.'
+          : 'Nessun cliente con questo nome.',
+      ),
+      404,
+    );
+  }
+  return c.json({ ok: true, clienti: matches.map(perSchermo) });
+});
+
+/**
+ * Il QR della tessera, da far inquadrare dallo schermo della cassa.
+ *
+ * Qui il giro funziona - a differenza del pass Apple, dove le istruzioni
+ * dicono di inquadrare il cartoncino e non lo schermo: li' e' il cliente a
+ * dover inquadrare, e nessuno puo' inquadrare il proprio telefono col
+ * proprio telefono. Da uno schermo diverso, invece, si puo'.
+ *
+ * Sta sotto /api/cassa/ e quindi dietro sessione: il QR porta al saldo di una
+ * persona, e non deve bastare indovinare un codice per vederselo comparire.
+ */
+app.get('/api/cassa/qr/:code', async (c) => {
+  const code = normalizeCode(c.req.param('code'));
+  if (!isValidCode(code)) return c.text('Codice tessera non valido', 404);
+
+  const card = await findByCode(c.env.DB, code);
+  if (!card) return c.text('Tessera non trovata', 404);
+
+  const url = `${new URL(c.req.url).origin}/c/${card.code}`;
+  return new Response(qrSvg(url, { size: 260 }), {
+    headers: {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      // il QR e' di una persona: non deve restare in nessuna cache
+      'Cache-Control': 'no-store',
+    },
+  });
+});
+
 /** Consegna della tessera: da vergine a intestata. */
 app.post('/api/cassa/activate', async (c) => {
   const body = await c.req.json<{
@@ -373,6 +526,11 @@ app.get('/api/titolare/stato', async (c) => {
     // il segreto non si mostra mai: basta sapere se c'e' e se e' leggibile
     walletSegreto: !!c.env.GOOGLE_WALLET_SA,
     walletProblema: readConfigDetailed(c.env, settings, new URL(c.req.url).origin).problema,
+    appleSegreto: !!c.env.APPLE_WALLET_CERT,
+    appleProblema: readAppleConfigDetailed(c.env, settings, new URL(c.req.url).origin).problema,
+    // il push e' l'unico pezzo che puo' mancare da solo: senza, il pass
+    // esiste e si aggiorna, ma solo quando il cliente lo tira giu' a mano
+    applePush: !!readAppleConfig(c.env, settings, new URL(c.req.url).origin)?.apns,
   });
 });
 
@@ -516,10 +674,13 @@ app.post('/api/titolare/clienti/attiva', async (c) => {
 
 app.get('/api/titolare/impostazioni', async (c) => {
   const s = await getSettings(c.env.DB);
-  // gli hash dei PIN non escono mai dal server
+  // Gli hash dei PIN non escono mai dal server, e nemmeno la chiave da cui si
+  // derivano i token dei pass: con quella si potrebbe leggere il saldo di
+  // qualunque tessera passando dal servizio di aggiornamento.
   const pubbliche: Record<string, string> = {};
   for (const [k, v] of Object.entries(s)) {
-    if (!k.includes('pin_hash') && !k.includes('pin_salt')) pubbliche[k] = v;
+    if (k.includes('pin_hash') || k.includes('pin_salt') || k === 'apple_auth_key') continue;
+    pubbliche[k] = v;
   }
   return c.json({ ok: true, impostazioni: pubbliche });
 });
@@ -532,8 +693,6 @@ const MODIFICABILI = new Set([
   'timezone',
   'wallet_issuer_id',
   'wallet_class_suffix',
-  'apple_pass_type_id',
-  'apple_team_id',
 ]);
 
 app.post('/api/titolare/impostazioni', async (c) => {
@@ -575,174 +734,6 @@ app.post('/api/titolare/pin-negozio', async (c) => {
  * Fa tutto lato server e poi rimanda a Google: il cliente tocca un pulsante e
  * si ritrova la tessera nel telefono, senza passaggi intermedi da capire.
  */
-// ============================================================= Apple Wallet
-
-/**
- * Gettone di autenticazione del pass, uno per tessera.
- *
- * Derivato invece che memorizzato: e' stabile senza occupare una colonna, e
- * non si puo' indovinare senza conoscere il segreto del negozio. iOS lo
- * rimanda a ogni richiesta del servizio web.
- */
-async function gettoneApple(env: Env, code: string): Promise<string> {
-  let segreto = (await getSettings(env.DB)).apple_auth_secret;
-  if (!segreto) {
-    segreto = randomHex(32);
-    await setSetting(env.DB, 'apple_auth_secret', segreto);
-  }
-  return sha256Hex(`${segreto}:${code}`);
-}
-
-/** Dati della tessera nella forma che serve al pass. */
-async function datiPerPass(env: Env, code: string) {
-  const card = await findByCode(env.DB, code);
-  if (!card || !card.activated_at) return null;
-
-  const premi = await listRewards(env.DB, STORE_ID);
-  const prossimo = premi.find((r) => r.points_cost > card.points_balance);
-  return {
-    card,
-    dati: {
-      code: card.code,
-      firstName: card.first_name,
-      points: card.points_balance,
-      prossimo: prossimo
-        ? { nome: prossimo.name, mancano: prossimo.points_cost - card.points_balance }
-        : null,
-      ciSonoPremi: premi.length > 0,
-    },
-  };
-}
-
-async function costruisciPass(c: any, code: string): Promise<Response> {
-  const settings = await getSettings(c.env.DB);
-  const esito = leggiConfigApple(c.env, settings, new URL(c.req.url).origin);
-  if (!esito.config) return c.text(`Apple Wallet non configurato. ${esito.problema}`, 503);
-
-  const t = await datiPerPass(c.env, code);
-  if (!t) return c.text('Tessera non trovata', 404);
-
-  const pkpass = await creaPkpass(esito.config, t.dati, await gettoneApple(c.env, code));
-  return new Response(pkpass, {
-    headers: {
-      'Content-Type': 'application/vnd.apple.pkpass',
-      'Content-Disposition': `attachment; filename="${code}.pkpass"`,
-      // Il pass cambia col saldo: non deve restare in una cache intermedia.
-      'Cache-Control': 'no-store',
-    },
-  });
-}
-
-/** "Aggiungi a Apple Wallet": iOS riconosce il tipo e apre il Wallet da solo. */
-app.get('/c/:code/apple', async (c) => {
-  const code = normalizeCode(c.req.param('code'));
-  if (!isValidCode(code)) return c.text('Codice tessera non valido', 404);
-  try {
-    return await costruisciPass(c, code);
-  } catch (err) {
-    console.error('Apple Wallet:', err);
-    return c.text('Non riesco a creare la tessera adesso. Riprova piu tardi.', 502);
-  }
-});
-
-// ---------------------------------------------- servizio web di PassKit
-//
-// iOS chiama queste rotte da solo: registra il dispositivo quando il cliente
-// aggiunge la tessera, e chiede il pass aggiornato quando la si tira giu' per
-// ricaricarla. Senza, il pass resterebbe fermo ai punti del giorno in cui e'
-// stato scaricato.
-
-const AUTORIZZATO = async (c: any, serial: string) => {
-  const testata = c.req.header('Authorization') ?? '';
-  const gettone = testata.replace(/^ApplePass\s+/i, '');
-  return !!gettone && gettone === (await gettoneApple(c.env, normalizeCode(serial)));
-};
-
-app.post('/api/apple/v1/devices/:device/registrations/:passType/:serial', async (c) => {
-  const { device, serial } = c.req.param();
-  if (!(await AUTORIZZATO(c, serial))) return c.body(null, 401);
-
-  const code = normalizeCode(serial);
-  const t = await datiPerPass(c.env, code);
-  if (!t) return c.body(null, 404);
-
-  const { pushToken } = await c.req.json<{ pushToken?: string }>();
-  if (!pushToken) return c.body(null, 400);
-
-  const gia = await c.env.DB.prepare(
-    'SELECT 1 AS c FROM apple_registrations WHERE device_library_id = ? AND serial_number = ?',
-  ).bind(device, code).first<{ c: number }>();
-
-  await c.env.DB.batch([
-    // il push token cambia nel tempo: si riscrive a ogni registrazione
-    c.env.DB.prepare(
-      `INSERT INTO apple_devices (device_library_id, push_token) VALUES (?, ?)
-       ON CONFLICT(device_library_id) DO UPDATE SET push_token = excluded.push_token`,
-    ).bind(device, pushToken),
-    c.env.DB.prepare(
-      `INSERT OR IGNORE INTO apple_registrations (device_library_id, serial_number) VALUES (?, ?)`,
-    ).bind(device, code),
-  ]);
-
-  return c.body(null, gia ? 200 : 201);
-});
-
-app.delete('/api/apple/v1/devices/:device/registrations/:passType/:serial', async (c) => {
-  const { device, serial } = c.req.param();
-  if (!(await AUTORIZZATO(c, serial))) return c.body(null, 401);
-
-  await c.env.DB.prepare(
-    'DELETE FROM apple_registrations WHERE device_library_id = ? AND serial_number = ?',
-  ).bind(device, normalizeCode(serial)).run();
-  return c.body(null, 200);
-});
-
-/** Quali tessere di questo dispositivo sono cambiate. */
-app.get('/api/apple/v1/devices/:device/registrations/:passType', async (c) => {
-  const { device } = c.req.param();
-  const { results } = await c.env.DB.prepare(
-    `SELECT r.serial_number AS s, COALESCE(cu.last_seen_at, cu.created_at) AS quando
-       FROM apple_registrations r
-       JOIN customers cu ON cu.code = r.serial_number
-      WHERE r.device_library_id = ?`,
-  ).bind(device).all<{ s: string; quando: number }>();
-
-  if (results.length === 0) return c.body(null, 204);
-
-  const da = Number(c.req.query('passesUpdatedSince') ?? 0);
-  const cambiate = results.filter((r) => (r.quando ?? 0) > da);
-  if (cambiate.length === 0) return c.body(null, 204);
-
-  return c.json({
-    serialNumbers: cambiate.map((r) => r.s),
-    lastUpdated: String(Math.max(...cambiate.map((r) => r.quando ?? 0))),
-  });
-});
-
-/** Il pass aggiornato, quando iOS lo richiede. */
-app.get('/api/apple/v1/passes/:passType/:serial', async (c) => {
-  const serial = c.req.param('serial');
-  if (!(await AUTORIZZATO(c, serial))) return c.body(null, 401);
-
-  const code = normalizeCode(serial);
-  if (!isValidCode(code)) return c.body(null, 404);
-  try {
-    return await costruisciPass(c, code);
-  } catch (err) {
-    console.error('Apple Wallet (aggiornamento):', err);
-    return c.body(null, 500);
-  }
-});
-
-/** iOS ci manda qui i suoi errori: utili solo se si leggono. */
-app.post('/api/apple/v1/log', async (c) => {
-  try {
-    const { logs } = await c.req.json<{ logs?: string[] }>();
-    for (const riga of logs ?? []) console.error('Apple Wallet dice:', riga);
-  } catch { /* un log malformato non e' un problema nostro */ }
-  return c.body(null, 200);
-});
-
 app.get('/c/:code/wallet', async (c) => {
   const code = normalizeCode(c.req.param('code'));
   if (!isValidCode(code)) return c.text('Codice tessera non valido', 404);
@@ -751,18 +742,156 @@ app.get('/c/:code/wallet', async (c) => {
   const cfg = readConfig(c.env, settings, new URL(c.req.url).origin);
   if (!cfg) return c.text('Google Wallet non e configurato per questo negozio', 503);
 
-  const t = await datiPerPass(c.env, code);
-  if (!t) return c.text('Tessera non trovata', 404);
+  const card = await findByCode(c.env.DB, code);
+  if (!card || !card.activated_at) return c.text('Tessera non trovata', 404);
 
   try {
-    await ensureClass(cfg);
-    await upsertObject(cfg, t.dati);
-    return c.redirect(await saveLink(cfg, t.card.code), 302);
+    // Le impronte delle immagini entrano nei loro indirizzi: e' l'unico modo
+    // perche' Google si accorga che un file e' cambiato, visto che il
+    // riallineamento confronta indirizzi e non immagini.
+    await ensureClass(await conImpronte(cfg, c.env.ASSETS));
+    await upsertObject(cfg, await datiTessera(c.env, card, settings));
+    return c.redirect(await saveLink(cfg, card.code), 302);
   } catch (err) {
     console.error('Google Wallet:', err);
     return c.text('Non riesco a creare la tessera adesso. Riprova piu tardi.', 502);
   }
 });
+
+// ============================================================= Apple Wallet
+
+/**
+ * Il file .pkpass di una tessera.
+ *
+ * Qui non si rimanda da nessuna parte, a differenza di Google: il pass e' un
+ * file che costruiamo e firmiamo noi, e il telefono lo apre appena arriva.
+ */
+app.get('/c/:code/apple', async (c) => {
+  const code = normalizeCode(c.req.param('code'));
+  if (!isValidCode(code)) return c.text('Codice tessera non valido', 404);
+
+  const settings = await getSettings(c.env.DB);
+  const cfg = readAppleConfig(c.env, settings, new URL(c.req.url).origin);
+  if (!cfg) return c.text('Apple Wallet non e configurato per questo negozio', 503);
+
+  const card = await findByCode(c.env.DB, code);
+  if (!card || !card.activated_at) return c.text('Tessera non trovata', 404);
+
+  try {
+    const pkpass = await buildPkpass(cfg, await datiTessera(c.env, card, settings), c.env.ASSETS);
+
+    return new Response(pkpass as unknown as BodyInit, {
+      headers: {
+        'Content-Type': 'application/vnd.apple.pkpass',
+        'Content-Disposition': `attachment; filename="${card.code}.pkpass"`,
+        // il saldo cambia: nessuna cache, altrimenti il cliente riscarica
+        // sempre lo stesso pass
+        'Cache-Control': 'no-store',
+      },
+    });
+  } catch (err) {
+    console.error('Apple Wallet:', err);
+    return c.text('Non riesco a creare la tessera adesso. Riprova piu tardi.', 502);
+  }
+});
+
+// ------------------------------------------------- servizio di aggiornamento
+
+/**
+ * Le rotte che chiama il telefono, non il cliente.
+ *
+ * Il percorso e' fissato da Apple: quel che scegliamo noi e' solo il prefisso,
+ * che finisce dentro il pass come `webServiceURL`. Cambiarlo dopo romperebbe
+ * i pass gia' consegnati, che continuerebbero a chiamare il vecchio.
+ *
+ * L'autenticazione e' un segreto per tessera che sta dentro il pass: chi non
+ * ce l'ha non puo' nemmeno sapere se una tessera esiste.
+ */
+const apple = new Hono<{ Bindings: Env }>();
+
+async function passAutorizzato(c: any, code: string): Promise<boolean> {
+  const header = c.req.header('Authorization') ?? '';
+  if (!header.startsWith('ApplePass ')) return false;
+  const cfg = readAppleConfig(c.env, await getSettings(c.env.DB), new URL(c.req.url).origin);
+  if (!cfg) return false;
+  return tokenValido(cfg, code, header.slice('ApplePass '.length));
+}
+
+/** Il telefono ha installato il pass e si fa trovare per gli aggiornamenti. */
+apple.post('/v1/devices/:device/registrations/:passType/:serial', async (c) => {
+  const code = normalizeCode(c.req.param('serial'));
+  if (!isValidCode(code)) return c.text('', 401);
+  if (!(await passAutorizzato(c, code))) return c.text('', 401);
+
+  const { pushToken } = await c.req.json<{ pushToken?: string }>().catch(() => ({ pushToken: undefined }));
+  if (!pushToken) return c.text('', 400);
+
+  const esito = await registerAppleDevice(c.env.DB, c.req.param('device'), pushToken, code);
+  return c.text('', esito === 'creata' ? 201 : 200);
+});
+
+/**
+ * "Cosa e' cambiato da quando ti ho chiamato l'ultima volta?"
+ *
+ * Qui il segreto e' l'identificativo del dispositivo, non il token del pass:
+ * la richiesta riguarda tutti i pass di quel telefono, non uno solo. Lo dice
+ * Apple, ed e' il motivo per cui questa rotta non controlla l'intestazione.
+ */
+apple.get('/v1/devices/:device/registrations/:passType', async (c) => {
+  const da = c.req.query('passesUpdatedSince');
+  const since = da ? Number.parseInt(da, 10) : null;
+  const { serials, lastUpdated } = await appleUpdatedSerials(
+    c.env.DB,
+    c.req.param('device'),
+    Number.isFinite(since as number) ? (since as number) : null,
+  );
+  if (serials.length === 0) return c.body(null, 204);
+  return c.json({ serialNumbers: serials, lastUpdated: String(lastUpdated) });
+});
+
+/** Il pass aggiornato. E' la stessa costruzione della rotta pubblica. */
+apple.get('/v1/passes/:passType/:serial', async (c) => {
+  const code = normalizeCode(c.req.param('serial'));
+  if (!isValidCode(code)) return c.text('', 401);
+  if (!(await passAutorizzato(c, code))) return c.text('', 401);
+
+  const settings = await getSettings(c.env.DB);
+  const cfg = readAppleConfig(c.env, settings, new URL(c.req.url).origin);
+  const card = await findByCode(c.env.DB, code);
+  if (!cfg || !card || !card.activated_at) return c.text('', 401);
+
+  const pkpass = await buildPkpass(cfg, await datiTessera(c.env, card, settings), c.env.ASSETS);
+  return new Response(pkpass as unknown as BodyInit, {
+    headers: { 'Content-Type': 'application/vnd.apple.pkpass', 'Cache-Control': 'no-store' },
+  });
+});
+
+/** Il cliente ha buttato il pass dal telefono. */
+apple.delete('/v1/devices/:device/registrations/:passType/:serial', async (c) => {
+  const code = normalizeCode(c.req.param('serial'));
+  if (!(await passAutorizzato(c, code))) return c.text('', 401);
+  await unregisterAppleDevice(c.env.DB, c.req.param('device'), code);
+  return c.text('', 200);
+});
+
+/**
+ * iOS racconta qui i suoi errori. Vale la pena ascoltarlo: e' l'unico posto
+ * in cui il telefono dice PERCHE' ha rifiutato un pass, invece di limitarsi a
+ * non fare niente.
+ */
+apple.post('/v1/log', async (c) => {
+  const { logs } = await c.req.json<{ logs?: string[] }>().catch(() => ({ logs: [] }));
+  for (const riga of logs ?? []) console.log('Wallet iOS:', riga);
+  return c.text('', 200);
+});
+
+app.route(WEB_SERVICE_PATH, apple);
+
+// I pass emessi fra il 21 e il 26 settembre 2026 hanno scritto dentro questo
+// indirizzo, e non si puo' cambiarlo: il servizio e' lo stesso, risponde
+// anche li'. Senza, quei pass resterebbero fermi al saldo del giorno in cui
+// sono stati aggiunti.
+app.route(WEB_SERVICE_PATH_VECCHIO, apple);
 
 // ============================================================ stampa tessere
 
@@ -809,12 +938,12 @@ app.get('/stampa/:batch', requireSession, async (c) => {
   @page { size: A4; margin: 10mm; }
   * { box-sizing: border-box; }
   body { margin:0; font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-         background:#f4f1ec; color:#2b2420; }
+         background:#f5f0ee; color:#2a2124; }
 
-  .barra { padding:16px; text-align:center; background:#fff; border-bottom:1px solid #e5ded5; }
-  .barra button { font:inherit; font-weight:600; background:#8c4a2f; color:#fff;
+  .barra { padding:16px; text-align:center; background:#fff; border-bottom:1px solid #e6dfe0; }
+  .barra button { font:inherit; font-weight:600; background:#56343c; color:#fff;
                   border:0; border-radius:10px; padding:12px 22px; cursor:pointer; }
-  .barra p { margin:.5em 0 0; color:#8a7f76; font-size:14px; }
+  .barra p { margin:.5em 0 0; color:#7a6a71; font-size:14px; }
 
   .foglio { width:190mm; margin:14px auto; display:grid;
             grid-template-columns:repeat(2, 85mm); grid-auto-rows:55mm;
@@ -866,6 +995,52 @@ const esc = (s: unknown) =>
  * dati personali (solo il nome di battesimo) perche' chi ha il link vede questa
  * pagina. E' sola lettura: assegnare punti passa da rotte con sessione.
  */
+/**
+ * Il cliente attiva la tessera da solo, inquadrando il QR.
+ *
+ * Prima l'intestazione si faceva dalla cassa, ma la cassa non ha tastiera:
+ * scrivere un nome col cliente davanti e la fila dietro e' il momento peggiore
+ * per digitare. Cosi' l'operatore consegna il cartoncino e basta, e il nome lo
+ * scrive chi lo conosce meglio, sul proprio telefono.
+ *
+ * Non serve sessione, per forza: chi attiva e' un cliente. Il controllo che
+ * conta e' che una tessera si intesti UNA VOLTA SOLA - senza, chiunque abbia
+ * il link potrebbe riscrivere il nome di un cliente gia' registrato.
+ */
+app.post('/api/tessera/:code/attiva', async (c) => {
+  const code = normalizeCode(c.req.param('code'));
+  if (!isValidCode(code)) return c.json(fail('Codice tessera non valido'), 404);
+
+  const card = await findByCode(c.env.DB, code);
+  if (!card) return c.json(fail('Tessera non trovata'), 404);
+  if (card.activated_at) return c.json(fail('Questa tessera e gia attiva'), 409);
+
+  type Modulo = { firstName?: string; phone?: string };
+  // corpo assente o malformato: si prosegue a mani vuote e sara' il controllo
+  // sul nome a rispondere, invece di far esplodere la rotta
+  const body = await c.req.json<Modulo>().catch((): Modulo => ({}));
+
+  const nome = (body.firstName ?? '').trim();
+  if (!nome) return c.json(fail('Serve il nome'), 400);
+  // Il nome finisce sulla tessera nel telefono e nelle ricerche in cassa:
+  // un limite tiene fuori gli incollaggi accidentali, non i nomi lunghi.
+  if (nome.length > 40) return c.json(fail('Il nome e troppo lungo'), 400);
+
+  try {
+    const customer = await activateCard(c.env.DB, {
+      customerId: card.id,
+      firstName: nome,
+      phone: body.phone,
+      // Niente consenso da chiedere: il negozio non manda promozioni, e un
+      // consenso raccolto e mai usato e' solo un dato in piu' da custodire.
+      consent: false,
+    });
+    return c.json({ ok: true, firstName: customer.first_name });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
+});
+
 /* ------------------------------------------------- la tessera nell'app */
 
 /**
@@ -955,10 +1130,15 @@ app.get('/c/:code', async (c) => {
 
   const origin = new URL(c.req.url).origin;
   const walletPronto = !!readConfig(c.env, settings, origin);
-  const applePronto = !!leggiConfigApple(c.env, settings, origin).config;
+  const applePronto = !!readAppleConfig(c.env, settings, origin);
   return c.html(
     customerPage({
-      storeName, customer, history: history as HistoryRow[], rewards, walletPronto, applePronto,
+      storeName,
+      customer,
+      history: history as HistoryRow[],
+      rewards,
+      walletPronto,
+      applePronto,
     }),
   );
 });
@@ -972,6 +1152,92 @@ type HistoryRow = {
   reward_name: string | null;
 };
 
+/**
+ * La pagina che vede chi inquadra una tessera appena consegnata.
+ *
+ * Chiede il minimo indispensabile: il nome. Il telefono e' facoltativo e
+ * serve a una cosa sola - ritrovare la tessera quando il cliente la dimentica
+ * a casa - e lo dice, invece di raccoglierlo e basta.
+ *
+ * Niente spunta per le promozioni: il negozio non ne manda, e chiedere un
+ * consenso che non si usera' aggiunge un campo da compilare in piedi e un
+ * dato in piu' da custodire, in cambio di niente.
+ *
+ * Niente cognome: la pagina mostra solo il nome di battesimo, e chiedere un
+ * dato che non si usa e' solo un campo in piu' da compilare in piedi.
+ */
+function paginaAttivazione(head: string, storeName: string, code: string): string {
+  return `${head}
+<main>
+  <header class="hero">
+    <p class="shop">${esc(storeName)}</p>
+    <h1>Attiva la tessera</h1>
+    <p class="hint">Ci vuole un nome. Da lì in poi i punti si accumulano da soli.</p>
+  </header>
+
+  <section class="card">
+    <form class="modulo" id="modulo" novalidate>
+      <label for="nome">Come ti chiami</label>
+      <input id="nome" type="text" autocomplete="given-name" enterkeyhint="done"
+             maxlength="40" placeholder="Il tuo nome" required>
+
+      <label for="tel">Telefono <span class="facolt">facoltativo</span></label>
+      <input id="tel" type="tel" inputmode="tel" autocomplete="tel" maxlength="25"
+             placeholder="Serve solo se dimentichi la tessera">
+
+      <button class="bottone" type="submit" id="vai">Attiva la tessera</button>
+      <p class="hint errore" id="esito" role="status"></p>
+    </form>
+  </section>
+
+  <footer>
+    <p>Codice tessera</p>
+    <p class="code">${esc(code)}</p>
+    <p class="hint">Conserva il cartoncino, oppure buttalo: da adesso basta il telefono.</p>
+  </footer>
+</main>
+
+<script>
+  const modulo = document.getElementById('modulo');
+  const vai = document.getElementById('vai');
+  const esito = document.getElementById('esito');
+
+  modulo.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const nome = document.getElementById('nome').value.trim();
+    if (!nome) {
+      esito.textContent = 'Scrivi il tuo nome.';
+      document.getElementById('nome').focus();
+      return;
+    }
+
+    // Il doppio tocco sul pulsante e' la norma su un telefono: senza questo,
+    // la seconda richiesta troverebbe la tessera gia' attiva e mostrerebbe un
+    // errore a chi ha appena fatto tutto giusto.
+    vai.disabled = true;
+    esito.textContent = '';
+    try {
+      const r = await fetch('/api/tessera/${esc(code)}/attiva', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firstName: nome,
+          phone: document.getElementById('tel').value.trim() || undefined,
+        }),
+      });
+      const dati = await r.json();
+      if (!r.ok || !dati.ok) throw new Error(dati.error || 'Non è andata, riprova');
+      // ricarico: la stessa pagina ora mostra il saldo e i pulsanti Wallet
+      location.reload();
+    } catch (err) {
+      esito.textContent = err.message;
+      vai.disabled = false;
+    }
+  });
+</script>
+</body></html>`;
+}
+
 function customerPage(data: {
   storeName: string;
   customer?: Customer;
@@ -984,6 +1250,7 @@ function customerPage(data: {
   const head = `<!doctype html><html lang="it"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(data.storeName)} - La tua tessera</title>
+<link rel="stylesheet" href="/tema.css">
 <link rel="stylesheet" href="/cliente.css"></head><body>`;
 
   if (data.notFound || !data.customer) {
@@ -993,6 +1260,12 @@ function customerPage(data: {
   }
 
   const cu = data.customer;
+
+  // Tessera ancora nella scatola: qui non c'e' un saldo da mostrare, c'e' un
+  // cliente da registrare. Prima questa pagina mostrava "Ciao " senza nome e
+  // due pulsanti Wallet che non potevano funzionare.
+  if (!cu.activated_at) return paginaAttivazione(head, data.storeName, cu.code);
+
   const next = (data.rewards ?? []).find((r) => r.points_cost > cu.points_balance);
   const reachable = (data.rewards ?? []).filter((r) => r.points_cost <= cu.points_balance);
 
@@ -1043,16 +1316,16 @@ function customerPage(data: {
     <p class="hint">I punti si aggiornano da soli: non devi rifare niente.</p>` : ''}
 
     ${data.applePronto ? `<p class="hint"${data.walletPronto ? ' style="margin-top:18px"' : ' style="margin-top:0"'}>Se hai un iPhone:</p>
-    <p><a class="bottone" href="/c/${esc(cu.code)}/apple">Aggiungi a Apple Wallet</a></p>
-    <p class="hint">Per aggiornare i punti, tira giu' la tessera nel Wallet.</p>`
-    : `<p class="hint"${data.walletPronto ? ' style="margin-top:18px"' : ' style="margin-top:0"'}>Se hai un iPhone (iOS 27 o successivo):</p>
+    <p><a class="bottone" href="/c/${esc(cu.code)}/apple">Aggiungi ad Apple Wallet</a></p>
+    <p class="hint">I punti si aggiornano da soli: non devi rifare niente.</p>` : `
+    <p class="hint"${data.walletPronto ? ' style="margin-top:18px"' : ' style="margin-top:0"'}>Se hai un iPhone (iOS 27 o successivo):</p>
     <ol class="passi">
       <li>Apri <b>Wallet</b></li>
       <li>Tocca <b>+</b> in alto, poi <b>Crea un pass</b></li>
       <li>Inquadra il <b>cartoncino della tessera</b>, non questo schermo</li>
     </ol>
     <p class="hint">La tessera creata cosi' resta ferma al momento in cui la crei:
-       serve a farti trovare il codice, ma per il saldo torna su questa pagina.</p>`}
+       serve a farti trovare il codice, ma per il saldo aggiornato torna su questa pagina.</p>`}
   </section>
 
   <footer>

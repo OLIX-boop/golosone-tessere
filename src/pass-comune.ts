@@ -19,18 +19,9 @@ export const COLORI = {
   oro: { hex: '#f2c75c', rgb: 'rgb(242, 199, 92)' },
 } as const;
 
-/**
- * Si cambia quando cambiano le immagini in `public/`.
- *
- * Google si tiene in cache le immagini per indirizzo: se il file cambia ma
- * l'indirizzo resta quello, le tessere continuano a mostrare la vecchia. Il
- * numero finisce in coda all'indirizzo e lo rende nuovo.
- */
-export const VERSIONE_IMMAGINI = 2;
-
 export const ETICHETTE = {
   punti: 'Punti',
-  intestatario: 'Intestatario',
+  intestatario: 'Tessera di',
   codice: 'Codice tessera',
   prossimo: 'Prossimo premio',
 } as const;
@@ -44,8 +35,31 @@ export type Prossimo = { nome: string; mancano: number } | null;
  * già raggiunti tutti, dirglielo vale più di una riga che sparisce.
  */
 export function rigaProssimo(prossimo: Prossimo, ciSonoPremi: boolean): string | null {
+  // Il premio prima e «fra» poi: l'articolo dipenderebbe dal genere del
+  // premio, che il titolare cambia quando vuole dal pannello.
   if (prossimo) {
-    return `${prossimo.mancano} ${prossimo.mancano === 1 ? 'punto' : 'punti'} a ${prossimo.nome}`;
+    return prossimo.mancano > 0
+      ? `${prossimo.nome} fra ${prossimo.mancano} ${prossimo.mancano === 1 ? 'punto' : 'punti'}`
+      : prossimo.nome;
   }
   return ciSonoPremi ? 'Hai un premio da ritirare al banco' : null;
+}
+
+/** I dati di una tessera nella forma che serve ai due Wallet. */
+export type DatiTessera = {
+  code: string;
+  firstName: string | null;
+  points: number;
+  /** il premio piu' vicino ancora da raggiungere, se si mostrano i premi */
+  nextReward?: { name: string; points_cost: number } | null;
+  /** se il negozio ha premi da mostrare */
+  ciSonoPremi?: boolean;
+};
+
+/** La riga del prossimo premio per questa tessera. */
+export function rigaDi(t: DatiTessera): string | null {
+  return rigaProssimo(
+    t.nextReward ? { nome: t.nextReward.name, mancano: t.nextReward.points_cost - t.points } : null,
+    t.ciSonoPremi ?? false,
+  );
 }
