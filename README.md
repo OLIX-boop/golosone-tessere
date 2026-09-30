@@ -580,7 +580,7 @@ npm run grafica -- --stile scuro
 
 | Stile | Com'e' |
 |---|---|
-| `golosone` | **quello in uso**: fondo cremisi, marchio in oro, testi bianchi, nessuna striscia. Uguale su Apple e su Google |
+| `golosone` | **quello in uso**: fondo carbone, marchio bianco, etichette in oro, nessuna striscia. Uguale su Apple e su Google, e uguale all'app degli ordini |
 | `minimo` | fondo bianco caldo, testi bordeaux, nessuna striscia |
 | `chiaro` | come sopra, ma con la fascia rosa cipria dal bordo smerlato |
 | `scuro` | fondo bordeaux pieno, logo e testi in crema |
@@ -600,7 +600,8 @@ Ogni immagine Apple esce in tre densita' (1x, 2x, 3x) e finisce in
 copia dentro il pacchetto senza rinominare niente.
 
 Le **tessere** hanno i colori dell'insegna, gli stessi dell'icona dell'app
-degli ordini: cremisi `#be1b45` e oro `#f2c75c`. Stanno in un posto solo,
+degli ordini dopo il restyle del 29/09/2026: fondo carbone `#161214`, marchio
+bianco ed etichette in oro `#f2c75c`. Stanno in un posto solo,
 `src/pass-comune.ts`, insieme alle parole dei campi e alla riga del prossimo
 premio: Apple e Google le prendono da li', e non possono piu' separarsi.
 

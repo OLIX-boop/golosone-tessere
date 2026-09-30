@@ -9,12 +9,16 @@
  */
 
 /**
- * I colori dell'insegna del Golosone: gli stessi dell'icona dell'app degli
- * ordini, così in cassa telefono, app e tessera si riconoscono come una
- * cosa sola.
+ * I colori dell'app degli ordini dopo il restyle «carbone caldo» del 29
+ * settembre 2026: fondo carbone e marchio bianco, come la sua icona, e l'oro
+ * per le etichette, come i punti nella scheda Tessera dell'app. Così in
+ * cassa telefono, app e tessera si riconoscono come una cosa sola.
+ *
+ * Prima il fondo era il cremisi dell'icona di allora (#be1b45): cambiata
+ * l'icona, la tessera rossa sembrava di un altro negozio.
  */
 export const COLORI = {
-  fondo: { hex: '#be1b45', rgb: 'rgb(190, 27, 69)' },
+  fondo: { hex: '#161214', rgb: 'rgb(22, 18, 20)' },
   testo: { hex: '#ffffff', rgb: 'rgb(255, 255, 255)' },
   oro: { hex: '#f2c75c', rgb: 'rgb(242, 199, 92)' },
 } as const;

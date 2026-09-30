@@ -42,14 +42,14 @@ const ORIGINALE = 'assets/logo-golosone.png';
  * con la fascia - e si vede.
  */
 export const STILI = {
-  // Lo stile del negozio: l'insegna. Fondo cremisi e marchio in oro, gli
-  // stessi dell'icona dell'app degli ordini, uguali su Apple e su Google. Niente
+  // Lo stile del negozio: fondo carbone e marchio bianco, come l'icona
+  // dell'app degli ordini, uguali su Apple e su Google. Niente
   // striscia: su Google non c'e' un equivalente, e le due tessere devono
   // sembrare la stessa. I colori stanno in src/pass-comune.ts, che li passa
   // anche ai due Wallet: qui non si ripetono.
   golosone: {
     carta: COLORI.fondo.hex,
-    inchiostro: COLORI.oro.hex,
+    inchiostro: COLORI.testo.hex,
     fascia: null,
     logoChiaro: true,
     striscia: false,

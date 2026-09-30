@@ -518,7 +518,7 @@ test('la coppia certificato e chiave gia in produzione vince sul pacchetto', () 
 
 test('la tessera Apple ha i colori e le parole di quella Google', async () => {
   const p = JSON.parse(await passJson(config, { ...tessera, nextReward: { name: 'Tortina', points_cost: 20 }, ciSonoPremi: true }));
-  assert.equal(p.backgroundColor, 'rgb(190, 27, 69)');
+  assert.equal(p.backgroundColor, 'rgb(22, 18, 20)');
   assert.equal(p.labelColor, 'rgb(242, 199, 92)');
   assert.equal(p.logoText, undefined, 'il nome sta gia nel logo');
   assert.equal(p.storeCard.secondaryFields[0].label, 'Tessera di');
