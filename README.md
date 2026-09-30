@@ -198,6 +198,21 @@ al vuoto.
 I due sistemi restano separati: un punto assegnato al banco non deve dipendere
 dal fatto che il sistema degli ordini sia in piedi, e viceversa.
 
+### La cassa dal telefono o dall'iPad
+
+La cassa nasce per il PC col lettore a pistola, che «digita» il contenuto del
+QR nel campo di scansione. Da un telefono o da un iPad il lettore non c'è: il
+bottone **«Inquadra con la fotocamera»** legge lo stesso QR con la fotocamera
+e lo mette nello stesso campo, e da lì parte la stessa ricerca. Sul server non
+cambia niente.
+
+Per leggere il QR si usa il lettore del browser quando c'è (Chrome su
+Android). Safari su iPhone e iPad non ce l'ha, e allora
+`public/vendor/jsQR.js` — jsQR 1.4.0, licenza Apache-2.0, copiato da
+`node_modules/jsqr/dist/` — caricato solo al primo uso: sul PC di cassa non
+si scarica mai. Il bottone compare solo dove il browser può usare una
+fotocamera.
+
 ### Il QR da sola lettura
 
 Chi conosce il link vede il saldo e basta. Assegnare punti passa da rotte che

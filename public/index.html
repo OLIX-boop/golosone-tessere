@@ -24,6 +24,14 @@
         padding:20px;margin-bottom:16px}
   .muted{color:var(--muted)}
   .hint{color:var(--muted);font-size:14px;margin:.3em 0 0}
+  /* La fotocamera: per chi usa la cassa dal telefono o dall'iPad, dove non
+     c'e' il lettore a pistola. */
+  .camera-btn{display:inline-flex;align-items:center;gap:8px;margin-top:10px;color:var(--ink);min-height:44px}
+  .camera-dialog{border:1px solid var(--line);border-radius:var(--radius);background:var(--card);color:var(--ink);
+    padding:18px;width:min(92vw,460px)}
+  .camera-dialog::backdrop{background:rgb(0 0 0 / 60%)}
+  .camera-dialog h2{margin:0 0 12px;font-size:20px}
+  .camera-dialog video{display:block;width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;background:#000}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   .grow{flex:1 1 200px}
   .banner{padding:14px 16px;border-radius:10px;margin-bottom:16px;font-weight:600;
@@ -115,7 +123,21 @@
       <input id="scanInput" autocomplete="off" autocapitalize="off" spellcheck="false"
              placeholder="Tessera, codice, telefono o nome">
       <p class="hint">Lo stesso campo accetta la scansione, il codice digitato, il telefono o il nome.</p>
+      <button type="button" class="ghost camera-btn" id="cameraBtn" hidden>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3.5"></circle>
+        </svg>
+        Inquadra con la fotocamera
+      </button>
     </form>
+
+    <dialog id="cameraDialog" class="camera-dialog" aria-labelledby="cameraTitolo">
+      <h2 id="cameraTitolo">Inquadra il QR della tessera</h2>
+      <video id="cameraVideo" playsinline muted></video>
+      <p class="hint" id="cameraStato" role="status"></p>
+      <div class="row" style="margin-top:12px"><button type="button" class="ghost" id="cameraChiudi">Chiudi</button></div>
+    </dialog>
 
     <div id="pickView" class="card" hidden>
       <h2>Quale cliente?</h2>
@@ -559,11 +581,121 @@ $('batchBtn').onclick = async () => {
 // non deve mai "scrivere nel vuoto".
 document.addEventListener('click', (e) => {
   if (!state.loggedIn) return;
-  if (e.target.closest('input,select,button,a,label')) return;
+  // Dentro la finestra della fotocamera un tocco non deve riportare il focus
+  // al campo: su telefono e iPad aprirebbe la tastiera sopra l'inquadratura.
+  if (e.target.closest('input,select,button,a,label,dialog')) return;
   focusScan();
 });
 
 boot().catch((e) => banner('Avvio fallito: ' + e.message, 'err', 0));
+
+/* ------------------------------------------------------ Fotocamera ------ */
+// La cassa nasce per il lettore a pistola, che "digita" il contenuto del QR
+// nel campo di scansione. Da un telefono o da un iPad il lettore non c'e':
+// qui la fotocamera legge lo stesso QR e lo mette nello stesso campo, e da
+// li' parte la stessa ricerca. Nessuna strada nuova sul server.
+//
+// Per leggere il QR si usa il lettore del browser quando c'e' (Chrome su
+// Android); Safari su iPhone e iPad non ce l'ha, e allora jsQR, servito da
+// qui (/vendor/jsQR.js) e caricato solo al primo uso: sul PC di cassa, che ha
+// la pistola, non si scarica mai.
+
+let flusso = null;
+let giro = null;
+let lettore = null;
+
+if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) $('cameraBtn').hidden = false;
+
+function caricaScript(src) {
+  return new Promise((ok, ko) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = ok;
+    s.onerror = () => ko(new Error('lettore dei QR non caricato'));
+    document.head.appendChild(s);
+  });
+}
+
+/** Una funzione che guarda un fotogramma e restituisce il testo del QR, o null. */
+async function preparaLettore() {
+  if ('BarcodeDetector' in window) {
+    try {
+      const formati = await BarcodeDetector.getSupportedFormats();
+      if (formati.includes('qr_code')) {
+        const rilevatore = new BarcodeDetector({ formats: ['qr_code'] });
+        return async (video) => {
+          const trovati = await rilevatore.detect(video);
+          return trovati.length ? trovati[0].rawValue : null;
+        };
+      }
+    } catch { /* si ripiega su jsQR */ }
+  }
+  await caricaScript('/vendor/jsQR.js');
+  const tela = document.createElement('canvas');
+  const ctx = tela.getContext('2d', { willReadFrequently: true });
+  return async (video) => {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return null;
+    // Rimpicciolito: un QR stampato si legge benissimo a 640 px, e ogni
+    // fotogramma pesa un quarto di uno a piena risoluzione.
+    const scala = Math.min(1, 640 / Math.max(w, h));
+    tela.width = Math.round(w * scala);
+    tela.height = Math.round(h * scala);
+    ctx.drawImage(video, 0, 0, tela.width, tela.height);
+    const img = ctx.getImageData(0, 0, tela.width, tela.height);
+    const qr = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+    return qr ? qr.data : null;
+  };
+}
+
+async function apriFotocamera() {
+  const stato = $('cameraStato');
+  stato.textContent = 'Avvio la fotocamera…';
+  $('cameraDialog').showModal();
+  try {
+    lettore = lettore || (await preparaLettore());
+    // La fotocamera dietro: quella davanti inquadra chi tiene il telefono.
+    flusso = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    const video = $('cameraVideo');
+    video.srcObject = flusso;
+    await video.play();
+    stato.textContent = 'Tieni il QR della tessera dentro il riquadro.';
+    const guarda = async () => {
+      if (!flusso) return;
+      try {
+        const testo = await lettore(video);
+        if (testo) return trovato(testo);
+      } catch { /* un fotogramma storto non ferma la lettura */ }
+      giro = setTimeout(guarda, 150);
+    };
+    guarda();
+  } catch (e) {
+    stato.textContent = e && e.name === 'NotAllowedError'
+      ? 'Accesso alla fotocamera negato: si riattiva dalle impostazioni del browser, alla voce di questo sito.'
+      : 'Fotocamera non disponibile: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function chiudiFotocamera() {
+  clearTimeout(giro);
+  if (flusso) flusso.getTracks().forEach((traccia) => traccia.stop());
+  flusso = null;
+  $('cameraVideo').srcObject = null;
+  if ($('cameraDialog').open) $('cameraDialog').close();
+}
+
+function trovato(testo) {
+  chiudiFotocamera();
+  if (navigator.vibrate) navigator.vibrate(60);
+  $('scanInput').value = testo;
+  doLookup();
+}
+
+$('cameraBtn').onclick = apriFotocamera;
+$('cameraChiudi').onclick = chiudiFotocamera;
+// Esc o il tasto indietro chiudono la finestra: la fotocamera va spenta
+// comunque, o resta accesa col pallino verde senza che nessuno la veda.
+$('cameraDialog').addEventListener('close', chiudiFotocamera);
 
 /* ------------------------------------------------- Tessera smarrita ------ */
 
