@@ -198,6 +198,23 @@ al vuoto.
 I due sistemi restano separati: un punto assegnato al banco non deve dipendere
 dal fatto che il sistema degli ordini sia in piedi, e viceversa.
 
+### La cassa fa vedere una cosa sola alla volta
+
+A schermo c'e' la ricerca, e sotto la tessera smarrita. Niente altro: finche'
+non si sa chi e' il cliente, non c'e' niente da decidere.
+
+Scelto il cliente, la sua scheda si apre sopra tutto il resto - punti, tastiera
+e movimenti - e si chiude quando ha finito. Cosi' non si danno punti al cliente
+precedente per aver premuto un bottone rimasto a schermo, che e' l'errore che
+non si vede: il saldo cresce e nessuno dei due se ne accorge.
+
+I punti si scrivono subito, appena premuto. Chi sta al banco non conferma due
+volte, e il cliente guarda il totale sullo schermo mentre paga. L'errore si
+rimedia con **«Annulla ultimo movimento»**, che compare nella scheda solo
+quando c'e' qualcosa da annullare e sparisce appena il cliente cambia: un
+annullo che resta a schermo e' un annullo che prima o poi finisce sul cliente
+sbagliato.
+
 ### La cassa dal telefono o dall'iPad
 
 La cassa nasce per il PC col lettore a pistola, che «digita» il contenuto del
@@ -286,7 +303,7 @@ Si cambiano in `settings` senza rideploy:
 |---|---|---|
 | `store_name` | `Pasticceria` | nome mostrato ovunque |
 | `max_points_per_tx` | `20` | tetto anti-errore: il 2 che diventa 22 |
-| `void_window_min` | `30` | minuti entro cui annullare un movimento |
+| `void_window_min` | `30` | minuti entro cui annullare un movimento **in cassa** |
 | `show_rewards_to_customer` | `1` | `0` lascia al cliente il solo saldo punti |
 
 `apple_auth_key` sta nella stessa tabella ma **non si tocca**: e' la chiave da
@@ -320,8 +337,10 @@ npx wrangler d1 execute tessere --local --command "UPDATE settings SET value='0'
 
 ## Stampare le tessere
 
-Dal pannello cassa, riquadro "Tessere da stampare": scegli quante e premi
-**Crea lotto**. Si apre il foglio pronto, `Stampa` manda al browser.
+Dal pannello titolare, riquadro "Tessere da stampare": scegli quante e premi
+**Crea lotto**. Si apre il foglio pronto, `Stampa` manda al browser. Il foglio
+gia' stampato si riapre anche dalla cassa (serve una sessione, di cassa o di
+titolare): capita di doverlo ristampare col cliente davanti.
 
 Dieci tessere per foglio A4, formato biglietto da visita (85x55mm). Le misure
 sono in millimetri e non in pixel: e' l'unica unita' che il browser traduce
@@ -352,7 +371,16 @@ legge, lo schermo e' crepato, o il cliente detta il codice al telefono.
   citano.
 - **Clienti** - i 15 con piu' punti, ricerca per nome/telefono/codice, e il
   blocco di una tessera persa o clonata. Bloccare non cancella: i punti restano
-  e il registro pure, ma la tessera non e' piu' utilizzabile.
+  e il registro pure, ma la tessera non e' piu' utilizzabile. Da qui si
+  correggono nome, cognome e telefono, e si annulla un movimento **anche
+  vecchio**: `void_window_min` vale solo per la cassa, dove il PIN e' condiviso
+  e il movimento non porta il nome di nessuno; il titolare entra col PIN suo e
+  corregge a mente fredda, spesso giorni dopo, quando il cliente conta i punti
+  e non tornano. L'unico no e' togliere punti gia' spesi: il saldo finirebbe
+  sotto zero, e un saldo negativo non vuol dire niente al banco.
+- **Tessere da stampare** - i lotti, con quante tessere di ognuno sono ancora
+  nella scatola. Stavano in cassa, dove toglievano spazio a chi deve solo dare
+  punti: si stampano di rado e mai in mezzo alla fila.
 - **Impostazioni** - nome negozio, tetto punti, finestra di annullo, traguardo
   visibile al cliente, il cambio del PIN di cassa, e lo stato dei due Wallet.
   Quello di Apple ha tre stati e non due: attivo col push, attivo senza (il

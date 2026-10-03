@@ -46,6 +46,14 @@
 
   /* Campo scansione: deve essere il posto piu' ovvio dello schermo */
   #scanInput{font-size:22px;padding:18px;letter-spacing:.04em}
+
+  /* La scheda del cliente: copre lo schermo perche' al banco e' l'unica cosa
+     che si sta facendo. Scorre al suo interno, cosi' i movimenti lunghi non
+     spingono fuori i tasti. */
+  .scheda{position:fixed;inset:0;z-index:50;overflow-y:auto;
+          background:var(--bg);padding:16px 16px 40px;
+          padding-top:max(16px,env(safe-area-inset-top,0))}
+  .scheda__dentro{max-width:720px;margin:0 auto}
   .scanlabel{font-weight:600;margin-bottom:8px;display:block}
 
   .cust{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
@@ -150,7 +158,16 @@
       <div class="row" style="margin-top:12px"><button class="ghost" id="pickCancel">Annulla</button></div>
     </div>
 
-    <div id="custView" hidden>
+    <!--
+      La scheda del cliente copre lo schermo.
+
+      Prima stava in mezzo alla pagina, sotto il campo di ricerca e sopra la
+      tessera smarrita e i lotti da stampare: con la fila al banco si finiva
+      per dare punti guardando la riga sbagliata. Qui dentro c'e' una cosa
+      sola da fare, e quando si chiude si torna a una schermata vuota.
+    -->
+    <div id="custView" class="scheda" hidden>
+     <div class="scheda__dentro">
       <div class="card">
         <div class="cust">
           <div>
@@ -168,7 +185,15 @@
         <div class="otherpoints">
           <input id="pointsInput" inputmode="numeric" autocomplete="off" placeholder="Altri punti">
           <button class="primary" id="pointsBtn">Assegna</button>
-          <button class="ghost" id="closeCust">Chiudi</button>
+        </div>
+
+        <!-- L'annullo e' un tasto suo, non piu' un pulsante dentro un banner
+             che spariva da solo dopo cinque secondi: chi si accorge
+             dell'errore mentre il cliente paga non fa in tempo a prenderlo.
+             Compare solo quando c'e' davvero qualcosa da annullare. -->
+        <div class="row" style="margin-top:16px;gap:10px">
+          <button class="ghost" id="closeCust" style="flex:1">Chiudi</button>
+          <button class="danger" id="annullaBtn" hidden>Annulla ultimo movimento</button>
         </div>
       </div>
 
@@ -181,6 +206,7 @@
         <h2>Ultimi movimenti</h2>
         <table id="histTable"></table>
       </div>
+     </div>
     </div>
 
     <!-- Consegna di una tessera vergine: si arriva qui scansionandola -->
@@ -227,18 +253,6 @@
       </div>
     </div>
 
-    <!-- Scorta di tessere da stampare -->
-    <div class="card">
-      <h2>Tessere da stampare</h2>
-      <p class="hint">Le tessere si stampano prima e stanno in una scatola alla cassa.
-         Si consegnano così come sono: è il cliente ad attivarle, inquadrando il QR
-         col proprio telefono.</p>
-      <div class="row" style="margin-top:14px">
-        <input id="batchCount" inputmode="numeric" value="20" style="max-width:110px">
-        <button class="primary" id="batchBtn">Crea lotto</button>
-      </div>
-      <ul class="rewards" id="batchList" style="margin-top:14px"></ul>
-    </div>
   </section>
 </div>
 
@@ -256,22 +270,20 @@ const state = { loggedIn: false, customer: null, lastTx: null, rewards: [], maxP
 const plural = (n) => (Math.abs(n) === 1 ? 'punto' : 'punti');
 
 let bannerTimer;
-/** `undo` mostra il tasto Annulla dentro il banner: l'errore si corregge dov'e' successo. */
-function banner(msg, kind = 'ok', ms = 5000, undoTxId = null) {
+/**
+ * Il banner dice com'e' andata, e basta.
+ *
+ * Prima si portava dentro anche il tasto Annulla, e spariva dopo cinque
+ * secondi: chi si accorgeva dell'errore mentre il cliente pagava non faceva
+ * in tempo a prenderlo. L'annullo ora e' un tasto suo nella scheda del
+ * cliente, che resta li' finche' si puo' usare.
+ */
+function banner(msg, kind = 'ok', ms = 5000) {
   clearTimeout(bannerTimer);
   $('bannerText').textContent = msg;
   $('banner').className = 'banner ' + kind;
   $('banner').hidden = false;
-
-  const action = $('bannerAction');
-  action.innerHTML = '';
-  if (undoTxId) {
-    const b = document.createElement('button');
-    b.className = 'danger';
-    b.textContent = 'Annulla';
-    b.onclick = () => undo(undoTxId);
-    action.appendChild(b);
-  }
+  $('bannerAction').innerHTML = '';
   if (ms) bannerTimer = setTimeout(() => { $('banner').hidden = true; }, ms);
 }
 
@@ -312,7 +324,7 @@ async function boot() {
   $('shopName').textContent = b.storeName;
   document.title = 'Cassa - ' + b.storeName;
   drawQuickButtons();
-  if (state.loggedIn) { await loadRewards(); loadBatches(); }
+  if (state.loggedIn) { await loadRewards();  }
   render();
 }
 
@@ -344,8 +356,7 @@ async function doLogin() {
     pin = ''; drawPin();
     state.loggedIn = true;
     await loadRewards();
-    loadBatches();
-    banner('Cassa sbloccata');
+      banner('Cassa sbloccata');
     render();
   } catch (e) { pin = ''; drawPin(); banner(e.message, 'err', 8000); }
 }
@@ -472,8 +483,20 @@ function showPicker(list) {
 $('pickCancel').onclick = () => { $('pickView').hidden = true; focusScan(); };
 
 function showCustomer(c, history) {
+  const prima = state.customer?.id;
   state.customer = c;
   $('pickView').hidden = true;
+
+  // Il movimento da annullare appartiene a chi era aperto prima: cambiando
+  // cliente, o chiudendo, quel tasto non deve restare puntato su di lui.
+  //
+  // Ma NON quando si ricarica lo stesso cliente dopo avergli dato punti: li'
+  // il movimento appena fatto e' proprio quello che si potrebbe voler
+  // annullare, ed e' il caso piu' frequente di tutti.
+  if (!c || c.id !== prima) {
+    state.lastTx = null;
+  }
+  mostraAnnulla();
 
   // Tessera appena uscita dalla scatola: non ha intestatario, quindi la
   // schermata giusta e' la consegna, non l'assegnazione punti.
@@ -543,8 +566,8 @@ async function award(points) {
     $('pointsInput').value = '';
     banner(
       `+${r.pointsAdded} ${plural(r.pointsAdded)} a ${r.customer.first_name}. Totale: ${r.customer.points_balance}`,
-      'ok', 8000, r.transactionId,
     );
+    mostraAnnulla();
     await refreshCustomer(r.customer);
   } catch (e) {
     banner(e.message, 'err');
@@ -554,14 +577,37 @@ async function award(points) {
   }
 }
 
+/**
+ * Il tasto compare solo quando c'e' qualcosa da annullare, e dice COSA
+ * annulla: «Annulla» da solo, davanti a un cliente che aspetta, si preme con
+ * il dubbio di cosa stia per succedere.
+ */
+function mostraAnnulla() {
+  const b = $('annullaBtn');
+  b.hidden = !state.lastTx;
+  b.disabled = false;
+}
+
 async function undo(txId) {
   try {
     const r = await api('/api/cassa/void', { body: { transactionId: txId } });
     state.lastTx = null;
+    mostraAnnulla();
     banner('Movimento annullato');
     await refreshCustomer(r.customer);
-  } catch (e) { banner(e.message, 'err'); }
+  } catch (e) {
+    // Fuori finestra o gia' annullato: il tasto non serve piu' a niente.
+    state.lastTx = null;
+    mostraAnnulla();
+    banner(e.message, 'err');
+  }
 }
+
+$('annullaBtn').onclick = () => {
+  if (!state.lastTx) return;
+  $('annullaBtn').disabled = true;
+  undo(state.lastTx);
+};
 
 // ------------------------------------------------------------- premi
 async function loadRewards() {
@@ -580,7 +626,9 @@ function drawRewards() {
       try {
         const r = await api('/api/cassa/redeem',
           { body: { customerId: state.customer.id, rewardId: Number(b.dataset.reward) } });
-        banner('Premio consegnato: ' + r.reward.name, 'ok', 8000, r.transactionId);
+        state.lastTx = r.transactionId;
+        banner('Premio consegnato: ' + r.reward.name);
+        mostraAnnulla();
         await refreshCustomer(r.customer);
       } catch (e) { banner(e.message, 'err'); }
     };
@@ -622,35 +670,8 @@ $('activateBtn').onclick = async () => {
     $('activateView').hidden = true;
     banner('Tessera di ' + r.customer.first_name + ' attivata');
     showCustomer(r.customer, []);
-    loadBatches();
-  } catch (e) { banner(e.message, 'err'); }
+    } catch (e) { banner(e.message, 'err'); }
   finally { $('activateBtn').disabled = false; }
-};
-
-// ------------------------------------------------------- lotti da stampare
-async function loadBatches() {
-  try {
-    const { batches } = await api('/api/cassa/batches');
-    $('batchList').innerHTML = batches.length
-      ? batches.map((b) => `<li>
-          <span>${b.batch}<br><span class="hint">${b.vergini} di ${b.totale} ancora da consegnare</span></span>
-          <a class="ghost" style="padding:8px 14px;border-radius:10px;text-decoration:none"
-             href="/stampa/${encodeURIComponent(b.batch)}" target="_blank">Stampa</a>
-        </li>`).join('')
-      : '<li><span class="hint">Nessun lotto ancora. Creane uno per stampare le prime tessere.</span></li>';
-  } catch { /* la scorta tessere non deve mai impedire di lavorare in cassa */ }
-}
-
-$('batchBtn').onclick = async () => {
-  const n = Number($('batchCount').value);
-  $('batchBtn').disabled = true;
-  try {
-    const r = await api('/api/cassa/cards/batch', { body: { count: n } });
-    banner(`Lotto di ${r.count} tessere pronto da stampare`, 'ok', 8000);
-    await loadBatches();
-    window.open('/stampa/' + encodeURIComponent(r.batch), '_blank');
-  } catch (e) { banner(e.message, 'err'); }
-  finally { $('batchBtn').disabled = false; }
 };
 
 // Se si clicca a vuoto il focus torna al campo scansione: il lettore barcode

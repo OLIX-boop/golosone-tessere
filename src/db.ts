@@ -246,13 +246,20 @@ export async function redeemReward(
 }
 
 /**
- * Annulla un movimento recente. Non cancella nulla: marca la riga come
- * annullata e rimette a posto il saldo, cosi' resta visibile che c'e' stata
- * una correzione invece di far sparire il movimento.
+ * Annulla un movimento. Non cancella nulla: marca la riga come annullata e
+ * rimette a posto il saldo, cosi' resta visibile che c'e' stata una
+ * correzione invece di far sparire il movimento.
+ *
+ * `windowMinutes: null` toglie il limite di tempo, e lo usa solo il titolare.
+ * Alla cassa il limite serve: il PIN e' condiviso, quindi un movimento non
+ * porta il nome di nessuno e mezz'ora e' quanto dura l'errore che si ricorda.
+ * Il titolare ha un PIN suo e sta correggendo a mente fredda, spesso giorni
+ * dopo - e se non potesse, l'unico rimedio tornerebbe a essere consegnare
+ * un'altra tessera.
  */
 export async function voidTransaction(
   db: D1Database,
-  args: { transactionId: number; windowMinutes: number },
+  args: { transactionId: number; windowMinutes: number | null },
 ) {
   const tx = await db
     .prepare('SELECT id, customer_id, kind, points_delta, voided_at, created_at FROM transactions WHERE id = ?')
@@ -268,9 +275,22 @@ export async function voidTransaction(
   if (!tx) throw new Error('Movimento non trovato');
   if (tx.voided_at) throw new Error('Movimento già annullato');
 
-  const ageMinutes = (Math.floor(Date.now() / 1000) - tx.created_at) / 60;
-  if (ageMinutes > args.windowMinutes) {
-    throw new Error(`Si può annullare solo entro ${args.windowMinutes} minuti`);
+  if (args.windowMinutes !== null) {
+    const ageMinutes = (Math.floor(Date.now() / 1000) - tx.created_at) / 60;
+    if (ageMinutes > args.windowMinutes) {
+      throw new Error(`Si può annullare solo entro ${args.windowMinutes} minuti`);
+    }
+  }
+
+  // Togliere punti gia' spesi porterebbe il saldo sotto zero, e un saldo
+  // negativo non vuol dire niente al banco: il cliente ha avuto il premio.
+  // Meglio fermarsi e dirlo, che lasciare un numero da cui non si torna.
+  const saldo = await db
+    .prepare('SELECT points_balance FROM customers WHERE id = ?')
+    .bind(tx.customer_id)
+    .first<{ points_balance: number }>();
+  if (saldo && saldo.points_balance - tx.points_delta < 0) {
+    throw new Error('Quei punti sono già stati spesi: il saldo andrebbe sotto zero');
   }
 
   const [voided] = await db.batch([

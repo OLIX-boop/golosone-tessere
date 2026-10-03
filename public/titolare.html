@@ -66,6 +66,7 @@
   td{padding:9px 0;border-bottom:1px solid var(--line)}
   td.num{text-align:right;font-variant-numeric:tabular-nums}
   tr.spenta td{opacity:.45}
+  tr.annullata td{opacity:.45;text-decoration:line-through}
   .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.1em;
         font-size:13px;color:var(--muted)}
 
@@ -218,6 +219,20 @@
           </div>
         </div>
 
+        <!-- I movimenti di una tessera, con l'annullo. In cassa si annulla
+             solo l'ultimo appena fatto: un punto sbagliato di ieri si rimedia
+             da qui. -->
+        <div id="movimentiCard" class="card" hidden
+             style="margin:14px 0 0;border-color:var(--accent)">
+          <h2>Movimenti di <span id="movChi"></span></h2>
+          <p class="hint">Annullare non cancella: il movimento resta, barrato, e il
+             saldo torna com'era. Non si possono togliere punti gia' spesi.</p>
+          <div style="margin-top:12px;overflow-x:auto"><table id="movTab"></table></div>
+          <div class="row" style="margin-top:12px">
+            <button class="ghost" id="movChiudi">Chiudi</button>
+          </div>
+        </div>
+
         <div style="margin-top:12px;overflow-x:auto"><table id="clientiTab"></table></div>
       </div>
     </div>
@@ -266,6 +281,21 @@
         <!-- Qui non c'e' niente da incollare: Pass Type ID e Team ID stanno
              dentro il certificato, quindi non possono discordare. -->
         <p class="hint" id="appleStato"></p>
+      </div>
+
+      <!-- Le tessere da stampare stanno qui e non in cassa: si stampano di
+           rado e mai in mezzo alla fila, e in cassa occupavano spazio a chi
+           deve solo dare punti. -->
+      <div class="card">
+        <h2>Tessere da stampare</h2>
+        <p class="hint">Si stampano prima e restano in una scatola alla cassa. Si
+           consegnano così come sono: è il cliente ad attivarle, inquadrando il QR
+           col proprio telefono.</p>
+        <div class="row" style="margin-top:14px">
+          <input id="lottoQuante" inputmode="numeric" value="20" style="max-width:110px">
+          <button class="primary" id="lottoCrea">Crea lotto</button>
+        </div>
+        <ul class="rewards" id="lottiElenco" style="margin-top:14px"></ul>
       </div>
 
       <div class="card">
@@ -623,6 +653,58 @@ $('modSalva').onclick = async () => {
   } catch (e) { banner(e.message, 'err'); }
 };
 
+/* ---- movimenti di una tessera, con l'annullo ---- */
+
+let inMovimenti = null;
+
+const quando = (sec) => new Date(sec * 1000).toLocaleString('it-IT',
+  { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+async function apriMovimenti(cliente) {
+  inMovimenti = cliente;
+  $('movChi').textContent = `${cliente.first_name ?? ''} ${cliente.last_name ?? ''}`.trim()
+    || cliente.code;
+  $('movimentiCard').hidden = false;
+  await caricaMovimenti();
+  $('movimentiCard').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+$('movChiudi').onclick = () => { inMovimenti = null; $('movimentiCard').hidden = true; };
+
+async function caricaMovimenti() {
+  if (!inMovimenti) return;
+  let d;
+  try { d = await api('/api/titolare/clienti/movimenti?customerId=' + inMovimenti.id); }
+  catch (e) { return banner(e.message, 'err'); }
+
+  $('movTab').innerHTML = d.movimenti.length
+    ? `<thead><tr><th>Quando</th><th>Cosa</th><th class="num">Punti</th><th></th></tr></thead><tbody>` +
+      d.movimenti.map((m) => `<tr class="${m.annullato ? 'annullata' : ''}">
+        <td>${esc(quando(m.quando))}</td>
+        <td>${esc(m.cosa)}</td>
+        <td class="num">${m.delta > 0 ? '+' : ''}${m.delta}</td>
+        <td class="num">${m.annullato ? '<span class="hint">annullato</span>'
+          : `<button class="ghost" style="padding:5px 10px;font-size:13px"
+               data-tx="${m.id}">Annulla</button>`}</td>
+      </tr>`).join('') + '</tbody>'
+    : '<tbody><tr><td class="hint">Nessun movimento</td></tr></tbody>';
+
+  $('movTab').querySelectorAll('button[data-tx]').forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm('Annullare questo movimento? Il saldo torna come prima.')) return;
+      b.disabled = true;
+      try {
+        const { customer } = await api('/api/titolare/clienti/annulla',
+          { body: { transactionId: Number(b.dataset.tx) } });
+        banner(`Movimento annullato. Saldo: ${customer.points_balance} punti`);
+        await caricaMovimenti();
+        // L'elenco a fianco mostra il saldo vecchio finche' non si rilegge.
+        await caricaClienti($('cercaCliente').value);
+      } catch (e) { b.disabled = false; banner(e.message, 'err'); }
+    };
+  });
+}
+
 async function caricaClienti(q = '') {
   let d;
   try { d = await api('/api/titolare/clienti?q=' + encodeURIComponent(q)); }
@@ -648,11 +730,20 @@ async function caricaClienti(q = '') {
         <td class="num">${c.points_lifetime}</td>
         <td class="num" style="white-space:nowrap">
           ${c.activated_at ? `<button class="ghost" style="padding:5px 10px;font-size:13px"
+              data-mov="${c.id}">Movimenti</button>
+            <button class="ghost" style="padding:5px 10px;font-size:13px"
               data-mod="${c.id}">Correggi</button>` : ''}
           <button class="ghost" style="padding:5px 10px;font-size:13px"
             data-id="${c.id}" data-active="${c.active}">${c.active ? 'Blocca' : 'Sblocca'}</button></td>
       </tr>`).join('') + '</tbody>'
     : '<tbody><tr><td class="hint">Nessun cliente</td></tr></tbody>';
+
+  $('clientiTab').querySelectorAll('button[data-mov]').forEach((b) => {
+    b.onclick = () => {
+      const cliente = d.clienti.find((c) => String(c.id) === b.dataset.mov);
+      if (cliente) apriMovimenti(cliente);
+    };
+  });
 
   $('clientiTab').querySelectorAll('button[data-mod]').forEach((b) => {
     b.onclick = () => {
@@ -686,6 +777,7 @@ async function caricaImpostazioni() {
   $('setIssuer').value = impostazioni.wallet_issuer_id ?? '';
   aggiornaStatoWallet(impostazioni.wallet_issuer_id);
   aggiornaStatoApple();
+  caricaLotti();
 }
 
 /**
@@ -725,6 +817,32 @@ function aggiornaStatoApple() {
     el.textContent = 'Attivo: il pulsante "Aggiungi ad Apple Wallet" compare ai clienti e i punti si aggiornano da soli.';
   }
 }
+
+/* ---- lotti di tessere ---- */
+
+async function caricaLotti() {
+  try {
+    const { batches } = await api('/api/titolare/lotti');
+    $('lottiElenco').innerHTML = batches.length
+      ? batches.map((b) => `<li>
+          <span>${esc(b.batch)}<br><span class="hint">${b.vergini} di ${b.totale} ancora da consegnare</span></span>
+          <a class="ghost" style="padding:8px 14px;border-radius:10px;text-decoration:none"
+             href="/stampa/${encodeURIComponent(b.batch)}" target="_blank">Stampa</a>
+        </li>`).join('')
+      : '<li><span class="hint">Nessun lotto ancora. Creane uno per stampare le prime tessere.</span></li>';
+  } catch (e) { $('lottiElenco').innerHTML = ''; }
+}
+
+$('lottoCrea').onclick = async () => {
+  $('lottoCrea').disabled = true;
+  try {
+    const r = await api('/api/titolare/lotti', { body: { count: Number($('lottoQuante').value) } });
+    banner(`Lotto di ${r.count} tessere pronto da stampare`);
+    await caricaLotti();
+    window.open('/stampa/' + encodeURIComponent(r.batch), '_blank');
+  } catch (e) { banner(e.message, 'err'); }
+  finally { $('lottoCrea').disabled = false; }
+};
 
 $('salvaWallet').onclick = async () => {
   try {

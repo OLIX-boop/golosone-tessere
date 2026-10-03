@@ -102,6 +102,18 @@ const requireOwner = async (c: any, next: () => Promise<void>) => {
   await next();
 };
 
+/**
+ * Il foglio di stampa va bene a entrambi: i lotti si creano dal pannello
+ * titolare, ma in cassa capita di ristampare un foglio rovinato senza avere
+ * il PIN del titolare sottomano.
+ */
+const requireCassaOTitolare = async (c: any, next: () => Promise<void>) => {
+  const cassa = await hasSession(c.env, getCookie(c, SESSION_COOKIE), 'cassa');
+  const titolare = cassa || (await hasSession(c.env, getCookie(c, ADMIN_COOKIE), 'titolare'));
+  if (!titolare) return c.text('Serve il PIN', 401);
+  await next();
+};
+
 /** Protegge tutto cio' che modifica i punti. La pagina cliente resta pubblica. */
 const requireSession = async (c: any, next: () => Promise<void>) => {
   if (!(await hasSession(c.env, getCookie(c, SESSION_COOKIE)))) {
@@ -733,6 +745,73 @@ app.post('/api/titolare/clienti/modifica', async (c) => {
   }
 });
 
+/**
+ * I movimenti di una tessera, per il titolare.
+ *
+ * In cassa se ne vedono dieci e si annulla solo l'ultimo appena fatto; qui
+ * servono quelli vecchi, perche' un punto sbagliato salta fuori giorni dopo,
+ * quando il cliente conta e non torna.
+ */
+app.get('/api/titolare/clienti/movimenti', async (c) => {
+  const customerId = Number(c.req.query('customerId'));
+  if (!customerId) return c.json(fail('Cliente mancante'), 400);
+  const movimenti = (await customerHistory(c.env.DB, customerId, 30)) as HistoryRow[];
+  return c.json({
+    ok: true,
+    movimenti: movimenti.map((m) => ({
+      id: m.id,
+      quando: m.created_at,
+      cosa: m.kind === 'redeem' ? (m.reward_name ?? 'Premio') : 'Punti assegnati',
+      delta: m.points_delta,
+      annullato: !!m.voided_at,
+    })),
+  });
+});
+
+/**
+ * L'annullo del titolare: senza finestra di tempo.
+ *
+ * Alla cassa mezz'ora basta e protegge, visto che il PIN e' condiviso e il
+ * movimento non porta il nome di nessuno. Il titolare entra con un PIN suo e
+ * corregge a mente fredda: se non potesse toccare un movimento di ieri,
+ * l'errore resterebbe nel saldo per sempre.
+ */
+app.post('/api/titolare/clienti/annulla', async (c) => {
+  const { transactionId } = await c.req.json<{ transactionId?: number }>();
+  if (!transactionId) return c.json(fail('Movimento mancante'), 400);
+  try {
+    const customer = await voidTransaction(c.env.DB, { transactionId, windowMinutes: null });
+    aggiornaPassInSottofondo(c, customer);
+    return c.json({ ok: true, customer });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
+});
+
+/**
+ * I lotti di tessere, dal pannello titolare.
+ *
+ * Si stampano di rado e mai in mezzo alla fila: stavano in fondo alla
+ * schermata di cassa, dove occupavano spazio a chi deve solo dare punti.
+ */
+app.get('/api/titolare/lotti', async (c) =>
+  c.json({ ok: true, batches: await listBatches(c.env.DB) }),
+);
+
+app.post('/api/titolare/lotti', async (c) => {
+  const { count } = await c.req.json<{ count?: number }>();
+  const quante = Number(count);
+  if (!Number.isFinite(quante) || quante < 1 || quante > 200) {
+    return c.json(fail('Da 1 a 200 tessere per lotto'), 400);
+  }
+  try {
+    const lotto = await createCardBatch(c.env.DB, { count: quante, storeId: STORE_ID });
+    return c.json({ ok: true, batch: lotto.batch, count: lotto.cards.length });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
+});
+
 app.get('/api/titolare/impostazioni', async (c) => {
   const s = await getSettings(c.env.DB);
   // Gli hash dei PIN non escono mai dal server, e nemmeno la chiave da cui si
@@ -967,7 +1046,7 @@ app.route(WEB_SERVICE_PATH_VECCHIO, apple);
  * stampato in locale punta a localhost e quello stampato in produzione al
  * dominio vero, senza configurazione da ricordare.
  */
-app.get('/stampa/:batch', requireSession, async (c) => {
+app.get('/stampa/:batch', requireCassaOTitolare, async (c) => {
   const batch = c.req.param('batch');
   const cards = await listBatch(c.env.DB, batch);
   if (cards.length === 0) return c.html('<p>Lotto non trovato</p>', 404);
