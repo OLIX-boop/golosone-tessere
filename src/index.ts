@@ -52,6 +52,9 @@ import {
   listRewards,
   redeemReward,
   searchCustomers,
+  cercaClienti,
+  cercaPerTitolare,
+  correggiCliente,
   setSetting,
   voidTransaction,
   appleUpdatedSerials,
@@ -394,6 +397,37 @@ app.post('/api/cassa/cards/batch', async (c) => {
   }
 });
 
+/**
+ * I suggerimenti che compaiono mentre si scrive nel campo della cassa.
+ *
+ * Perche' esiste accanto a `lookup`: quello deve decidere da solo — scansioni
+ * e sei dentro — mentre qui si guarda un elenco e si sceglie. Chiamare
+ * `lookup` a ogni lettera lo porterebbe a saltare dentro un cliente a meta'
+ * di un nome, che e' esattamente quello che non deve succedere.
+ *
+ * Restituisce poco e leggero: niente movimenti, niente telefono. Serve a
+ * riconoscere la riga giusta, e il resto arriva quando la si sceglie.
+ *
+ * Fuori le tessere bloccate e quelle ancora nella scatola: al banco un
+ * suggerimento serve per dare punti, e a quelle non se ne danno.
+ */
+app.get('/api/cassa/suggerimenti', async (c) => {
+  const q = (c.req.query('q') ?? '').trim();
+  // Sotto le due lettere qualunque cosa somiglia a tutto: si tace.
+  if (q.length < 2) return c.json({ ok: true, clienti: [] });
+
+  const trovati = await cercaClienti(c.env.DB, q, { limite: 8 });
+  return c.json({
+    ok: true,
+    clienti: trovati.map((x) => ({
+      code: x.code,
+      first_name: x.first_name,
+      last_name: x.last_name,
+      points_balance: x.points_balance,
+    })),
+  });
+});
+
 app.get('/api/cassa/batches', async (c) =>
   c.json({ ok: true, batches: await listBatches(c.env.DB) }),
 );
@@ -657,12 +691,10 @@ app.get('/api/titolare/clienti', async (c) => {
   const q = (c.req.query('q') ?? '').trim();
   if (!q) return c.json({ ok: true, clienti: await topCustomers(c.env.DB, 15), modo: 'top' });
 
-  const parsed = parseInput(q);
-  const clienti =
-    parsed.type === 'code'
-      ? [await findByCode(c.env.DB, normalizeCode(parsed.value))].filter(Boolean)
-      : await searchCustomers(c.env.DB, parsed.type === 'phone' ? { phone: parsed.value } : { name: q });
-  return c.json({ ok: true, clienti, modo: 'ricerca' });
+  // Una ricerca sola, che cerca ogni parola dentro nome, cognome, telefono e
+  // codice insieme: qui non serve indovinare cosa sia stato digitato, perche'
+  // chi cerca sta guardando un elenco e sceglie.
+  return c.json({ ok: true, clienti: await cercaPerTitolare(c.env.DB, q), modo: 'ricerca' });
 });
 
 app.post('/api/titolare/clienti/attiva', async (c) => {
@@ -670,6 +702,35 @@ app.post('/api/titolare/clienti/attiva', async (c) => {
   if (!customerId) return c.json(fail('Cliente mancante'), 400);
   const customer = await setCustomerActive(c.env.DB, customerId, active !== false);
   return c.json({ ok: true, customer });
+});
+
+/**
+ * Corregge nome, cognome e telefono di una tessera gia' consegnata.
+ *
+ * Senza, un cognome dimenticato al banco o una cifra storta nel telefono si
+ * rimediavano solo consegnando un'altra tessera - e buttando via i punti.
+ *
+ * Codice e saldo restano fuori di proposito: il codice e' stampato sul
+ * cartoncino che il cliente ha in tasca, e il saldo si muove solo dal
+ * registro.
+ */
+app.post('/api/titolare/clienti/modifica', async (c) => {
+  const { customerId, firstName, lastName, phone } = await c.req.json<{
+    customerId?: number; firstName?: string; lastName?: string; phone?: string;
+  }>();
+  if (!customerId) return c.json(fail('Cliente mancante'), 400);
+
+  try {
+    const customer = await correggiCliente(c.env.DB, {
+      customerId,
+      firstName: firstName ?? '',
+      lastName,
+      phone,
+    });
+    return c.json({ ok: true, customer });
+  } catch (err) {
+    return c.json(fail((err as Error).message), 400);
+  }
 });
 
 app.get('/api/titolare/impostazioni', async (c) => {

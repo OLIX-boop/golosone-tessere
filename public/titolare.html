@@ -179,11 +179,45 @@
     <div id="tab-clienti" hidden>
       <div class="card">
         <h2>Clienti</h2>
+        <!-- Niente tasto «Cerca»: i risultati arrivano mentre si scrive, e un
+             tasto che non serve e' un tasto che qualcuno aspetta di premere. -->
         <div class="row">
-          <div class="grow"><input id="cercaCliente" placeholder="Nome, telefono o codice tessera"></div>
-          <button class="ghost" id="cercaBtn">Cerca</button>
+          <div class="grow">
+            <input id="cercaCliente" placeholder="Nome, cognome, telefono o codice"
+                   autocomplete="off" spellcheck="false">
+          </div>
         </div>
         <p class="hint" id="clientiNota"></p>
+
+        <!-- La correzione dei dati: compare solo quando si sceglie chi
+             correggere, perche' il caso normale e' guardare, non modificare. -->
+        <div id="modificaCard" class="card" hidden
+             style="margin:14px 0 0;border-color:var(--accent)">
+          <h2>Correggi <span id="modificaChi"></span></h2>
+          <p class="hint">Il codice tessera non si cambia: e' stampato sul cartoncino
+             del cliente e dentro il pass nel suo telefono.</p>
+          <div class="row" style="margin-top:12px">
+            <div class="grow">
+              <label class="hint" for="modNome">Nome</label>
+              <input id="modNome" autocomplete="off">
+            </div>
+            <div class="grow">
+              <label class="hint" for="modCognome">Cognome</label>
+              <input id="modCognome" autocomplete="off">
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <div class="grow">
+              <label class="hint" for="modTelefono">Telefono</label>
+              <input id="modTelefono" inputmode="tel" autocomplete="off">
+            </div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="modSalva">Salva</button>
+            <button class="ghost" id="modAnnulla">Annulla</button>
+          </div>
+        </div>
+
         <div style="margin-top:12px;overflow-x:auto"><table id="clientiTab"></table></div>
       </div>
     </div>
@@ -523,10 +557,71 @@ $('npBtn').onclick = async () => {
 };
 
 // ------------------------------------------------------------- clienti
-$('cercaBtn').onclick = () => caricaClienti($('cercaCliente').value);
-$('cercaCliente').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); caricaClienti($('cercaCliente').value); }
+
+/**
+ * I risultati arrivano mentre si scrive.
+ *
+ * L'attesa serve: senza, ogni tasto premuto sarebbe una richiesta, e
+ * scrivendo «Rossi» ne partirebbero cinque di cui quattro gia' vecchie
+ * all'arrivo. Duecento millisecondi sono sotto la soglia in cui si percepisce
+ * un ritardo, e sopra la velocita' con cui si digita.
+ */
+let attesaRicerca;
+$('cercaCliente').addEventListener('input', () => {
+  clearTimeout(attesaRicerca);
+  const q = $('cercaCliente').value;
+  attesaRicerca = setTimeout(() => caricaClienti(q), 200);
 });
+$('cercaCliente').addEventListener('keydown', (e) => {
+  // Invio cerca subito, senza aspettare: chi lo preme ha gia' finito di
+  // scrivere e non vuole aspettare un altro quinto di secondo.
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    clearTimeout(attesaRicerca);
+    caricaClienti($('cercaCliente').value);
+  }
+});
+
+/* ---- correzione dei dati di una tessera ---- */
+
+let inCorrezione = null;
+
+function apriCorrezione(cliente) {
+  inCorrezione = cliente;
+  $('modificaChi').textContent = cliente.code;
+  $('modNome').value = cliente.first_name ?? '';
+  $('modCognome').value = cliente.last_name ?? '';
+  $('modTelefono').value = cliente.phone ?? '';
+  $('modificaCard').hidden = false;
+  $('modNome').focus();
+}
+
+function chiudiCorrezione() {
+  inCorrezione = null;
+  $('modificaCard').hidden = true;
+}
+
+$('modAnnulla').onclick = chiudiCorrezione;
+
+$('modSalva').onclick = async () => {
+  if (!inCorrezione) return;
+  const nome = $('modNome').value.trim();
+  if (!nome) return banner('Il nome non può restare vuoto', 'err');
+
+  try {
+    await api('/api/titolare/clienti/modifica', {
+      body: {
+        customerId: inCorrezione.id,
+        firstName: nome,
+        lastName: $('modCognome').value,
+        phone: $('modTelefono').value,
+      },
+    });
+    banner('Dati aggiornati');
+    chiudiCorrezione();
+    caricaClienti($('cercaCliente').value);
+  } catch (e) { banner(e.message, 'err'); }
+};
 
 async function caricaClienti(q = '') {
   let d;
@@ -535,7 +630,13 @@ async function caricaClienti(q = '') {
 
   $('clientiNota').textContent = d.modo === 'top'
     ? 'I 15 clienti con più punti in questo momento.'
-    : `${d.clienti.length} risultati.`;
+    : d.clienti.length === 1
+      ? 'Un risultato.'
+      : `${d.clienti.length} risultati.`;
+
+  if (!d.clienti.length && d.modo === 'ricerca') {
+    $('clientiNota').textContent = 'Nessuno. Prova con meno parole, o col codice della tessera.';
+  }
 
   $('clientiTab').innerHTML = d.clienti.length
     ? `<thead><tr><th>Cliente</th><th>Tessera</th><th class="num">Punti</th>
@@ -545,10 +646,20 @@ async function caricaClienti(q = '') {
         <td class="code">${esc(c.code)}</td>
         <td class="num">${c.points_balance}</td>
         <td class="num">${c.points_lifetime}</td>
-        <td class="num"><button class="ghost" style="padding:5px 10px;font-size:13px"
+        <td class="num" style="white-space:nowrap">
+          ${c.activated_at ? `<button class="ghost" style="padding:5px 10px;font-size:13px"
+              data-mod="${c.id}">Correggi</button>` : ''}
+          <button class="ghost" style="padding:5px 10px;font-size:13px"
             data-id="${c.id}" data-active="${c.active}">${c.active ? 'Blocca' : 'Sblocca'}</button></td>
       </tr>`).join('') + '</tbody>'
     : '<tbody><tr><td class="hint">Nessun cliente</td></tr></tbody>';
+
+  $('clientiTab').querySelectorAll('button[data-mod]').forEach((b) => {
+    b.onclick = () => {
+      const cliente = d.clienti.find((c) => String(c.id) === b.dataset.mod);
+      if (cliente) apriCorrezione(cliente);
+    };
+  });
 
   $('clientiTab').querySelectorAll('button[data-id]').forEach((b) => {
     b.onclick = async () => {

@@ -726,3 +726,121 @@ export async function forgetApplePushTokens(db: D1Database, tokens: string[]): P
     await db.prepare('DELETE FROM apple_devices WHERE push_token = ?').bind(t).run();
   }
 }
+
+/**
+ * La ricerca del pannello titolare, diversa da quella di cassa.
+ *
+ * Quella di cassa deve indovinare da sola se le hai dato un codice, un
+ * telefono o un nome, perche' l'operatore scansiona e basta. Qui invece si
+ * digita, spesso a meta', e si guarda un elenco: serve una ricerca che
+ * perdona.
+ *
+ * Tre differenze che contano:
+ *
+ *   * **cerca ogni parola dentro tutto.** Prima nome e cognome si
+ *     confrontavano separati, quindi «Mario Rossi» non trovava nessuno: non
+ *     esiste una colonna che contenga entrambi. Ora le parole si cercano in
+ *     nome, cognome, telefono e codice messi insieme, e vanno trovate tutte
+ *     — cosi' «rossi mario» funziona come «mario rossi», e «rossi 3331»
+ *     restringe invece di allargare;
+ *   * **trova anche le tessere bloccate.** Erano escluse, e visto che
+ *     bloccare e sbloccare si fa da qui, una tessera bloccata non si
+ *     ritrovava piu' per sbloccarla;
+ *   * **trova anche quelle vergini**, che servono quando si cerca per
+ *     codice un cartoncino ancora nella scatola.
+ */
+export type OpzioniRicerca = {
+  /** Le bloccate servono al titolare, che da li' le sblocca; alla cassa no:
+      a una tessera bloccata non si assegnano punti. */
+  bloccate?: boolean;
+  /** Le vergini si cercano per codice quando il cartoncino e' ancora nella
+      scatola. In cassa confonderebbero: non hanno un intestatario. */
+  vergini?: boolean;
+  limite?: number;
+};
+
+export async function cercaClienti(
+  db: D1Database,
+  testo: string,
+  opzioni: OpzioniRicerca = {},
+) {
+  const { bloccate = false, vergini = false, limite = 15 } = opzioni;
+  // Le parole si contano: una ricerca di venti termini e' un incollaggio
+  // accidentale, e produrrebbe venti condizioni per niente.
+  const parole = testo
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 6);
+  if (!parole.length) return [];
+
+  // Il pagliaio: tutto quello in cui ha senso cercare, in una stringa sola.
+  // `phone_norm` e non `phone` perche' chi digita non mette gli spazi come
+  // li ha messi chi ha registrato la tessera.
+  const pagliaio = `lower(
+    COALESCE(first_name, '') || ' ' || COALESCE(last_name, '') || ' ' ||
+    COALESCE(phone_norm, '') || ' ' || code
+  )`;
+
+  const condizioni = parole.map(() => `${pagliaio} LIKE ?`).join(' AND ');
+  const valori = parole.map((p) => `%${p.replace(/[%_]/g, '')}%`);
+
+  const filtri = [
+    bloccate ? '' : 'active = 1',
+    vergini ? '' : 'activated_at IS NOT NULL',
+  ].filter(Boolean);
+
+  const { results } = await db
+    .prepare(
+      `SELECT ${CUSTOMER_COLS} FROM customers
+        WHERE ${[condizioni, ...filtri].join(' AND ')}
+        ORDER BY activated_at IS NULL, last_seen_at DESC, first_name
+        LIMIT ?`,
+    )
+    .bind(...valori, limite)
+    .all<Customer>();
+  return results;
+}
+
+/** Il titolare vede tutto: blocca, sblocca e corregge, quindi deve trovare. */
+export const cercaPerTitolare = (db: D1Database, testo: string, limite = 15) =>
+  cercaClienti(db, testo, { bloccate: true, vergini: true, limite });
+
+/**
+ * Corregge i dati di una tessera gia' consegnata.
+ *
+ * Serve perche' si sbaglia: un cognome dimenticato al banco, una cifra storta
+ * nel telefono. Senza questo, l'unico rimedio era consegnare un'altra tessera
+ * e perdere i punti.
+ *
+ * Il codice NON si tocca: e' stampato sul cartoncino che il cliente ha in
+ * tasca e dentro il pass nel suo telefono. E non si tocca nemmeno il saldo:
+ * quello si muove solo dal registro, che e' append-only apposta.
+ */
+export async function correggiCliente(
+  db: D1Database,
+  args: { customerId: number; firstName: string; lastName?: string; phone?: string },
+): Promise<Customer> {
+  const prima = await findById(db, args.customerId);
+  if (!prima) throw new Error('Tessera non trovata');
+  if (!prima.activated_at) throw new Error('Questa tessera non e ancora stata consegnata');
+  if (!args.firstName?.trim()) throw new Error('Il nome e obbligatorio');
+
+  await db
+    .prepare(
+      `UPDATE customers
+          SET first_name = ?, last_name = ?, phone = ?, phone_norm = ?
+        WHERE id = ?`,
+    )
+    .bind(
+      args.firstName.trim(),
+      args.lastName?.trim() || null,
+      args.phone?.trim() || null,
+      args.phone?.trim() ? normalizePhone(args.phone) : null,
+      args.customerId,
+    )
+    .run();
+
+  return (await findById(db, args.customerId))!;
+}

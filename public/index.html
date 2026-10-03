@@ -122,6 +122,11 @@
       <label class="scanlabel" for="scanInput">Scansiona la tessera</label>
       <input id="scanInput" autocomplete="off" autocapitalize="off" spellcheck="false"
              placeholder="Tessera, codice, telefono o nome">
+      <!-- I suggerimenti compaiono qui mentre si scrive un nome. Restano
+           dentro il riquadro e non in un menu sovrapposto: sul PC cassa il
+           dito arriva prima dell'occhio, e un elenco che si apre sopra ad
+           altro si preme per sbaglio. -->
+      <ul class="rewards" id="suggList" hidden style="margin-top:12px"></ul>
       <p class="hint">Lo stesso campo accetta la scansione, il codice digitato, il telefono o il nome.</p>
       <button type="button" class="ghost camera-btn" id="cameraBtn" hidden>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -362,7 +367,78 @@ $('scanInput').addEventListener('keydown', (e) => {
 });
 $('scanForm').onsubmit = (e) => { e.preventDefault(); doLookup(); };
 
+/**
+ * I suggerimenti mentre si scrive un nome.
+ *
+ * Tre cose che vanno rispettate, o si rompe la cassa:
+ *
+ *   * **il lettore barcode scrive in questo stesso campo**, velocissimo e
+ *     chiudendo con Invio. Partire a ogni lettera vorrebbe dire una raffica
+ *     di richieste durante una scansione, e un elenco che lampeggia mentre
+ *     l'operatore sta gia' andando avanti;
+ *   * per questo chi somiglia a un codice o a un indirizzo scansionato non
+ *     chiede suggerimenti: ci pensa Invio, che arriva da solo;
+ *   * si sceglie col dito, ma **Invio continua a funzionare come prima**:
+ *     chi digita il nome per intero e preme Invio non deve accorgersi che i
+ *     suggerimenti esistono.
+ */
+let attesaSugg;
+
+const sembraScansione = (q) => {
+  const testo = q.trim();
+  // Uno spazio non esiste in una scansione: il lettore manda il codice o
+  // l'indirizzo del QR, mai due parole. Senza questa riga qualunque nome
+  // lungo piu' di otto lettere veniva scambiato per un codice, e i
+  // suggerimenti sparivano proprio quando servivano — «andrea oli».
+  if (/\s/.test(testo)) return false;
+  if (/^https?:/i.test(testo)) return true;
+  return testo.replace(/[^0-9A-Za-z]/g, '').length >= 8;
+};
+
+function nascondiSugg() {
+  clearTimeout(attesaSugg);
+  $('suggList').hidden = true;
+  $('suggList').innerHTML = '';
+}
+
+async function mostraSugg(q) {
+  try {
+    const r = await api('/api/cassa/suggerimenti?q=' + encodeURIComponent(q));
+    // Nel frattempo l'operatore puo' aver scansionato o cancellato: se il
+    // campo non e' piu' quello di partenza, questa risposta e' vecchia.
+    if ($('scanInput').value.trim() !== q) return;
+    if (!r.clienti.length) return nascondiSugg();
+
+    $('suggList').innerHTML = r.clienti
+      .map((c) => `<li><span>${esc(c.first_name)} ${esc(c.last_name || '')}
+                     <br><span class="code">${esc(c.code)}</span></span>
+                   <button class="primary" data-code="${esc(c.code)}">${c.points_balance} punti</button></li>`)
+      .join('');
+    $('suggList').querySelectorAll('button').forEach((b) => {
+      b.onclick = () => {
+        $('scanInput').value = b.dataset.code;
+        nascondiSugg();
+        doLookup();
+      };
+    });
+    $('suggList').hidden = false;
+  } catch {
+    // Un suggerimento che non arriva non e' un errore da mostrare: il campo
+    // funziona lo stesso, e un banner rosso mentre si scrive e' solo
+    // allarme.
+    nascondiSugg();
+  }
+}
+
+$('scanInput').addEventListener('input', () => {
+  const q = $('scanInput').value.trim();
+  clearTimeout(attesaSugg);
+  if (q.length < 2 || sembraScansione(q)) return nascondiSugg();
+  attesaSugg = setTimeout(() => mostraSugg(q), 200);
+});
+
 async function doLookup() {
+  nascondiSugg();
   const q = $('scanInput').value.trim();
   if (!q) return;
   try {
